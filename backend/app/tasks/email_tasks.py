@@ -233,3 +233,74 @@ def send_sign_in_alert_email(
         accent="#B45309",
     )
     return send_email(email, f"New sign-in to your {settings.EMAILS_FROM_NAME} account", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_approval_requested_email")
+def send_approval_requested_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    customer_name: str = "",
+    risk_band: str = "",
+    score: float = 0.0,
+    approval_id: str = "",
+) -> str:
+    """Tells an approver a quotation is waiting on them."""
+    link = f"{settings.FRONTEND_URL}/app/approvals/{approval_id}"
+    html = render_email(
+        heading="A quotation needs your approval",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{quotation_number}</strong> for <strong>{customer_name}</strong> "
+            f"has been submitted and is waiting on you.</p>"
+            f"<p style='font-size:14px;color:#6B7280'>Blended risk: "
+            f"<strong>{risk_band.upper()}</strong> ({score:.2f})</p>"
+        ),
+        button_label="Review the quotation",
+        button_url=link,
+        accent="#B45309",
+    )
+    return send_email(email, f"Approval needed: {quotation_number}", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_approval_decision_email")
+def send_approval_decision_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    outcome: str = "",
+    decided_by: str = "",
+    note: str = "",
+    quotation_id: str = "",
+) -> str:
+    """Tells the rep what an approver decided, and why."""
+    headings = {
+        "approved": "Your quotation was approved",
+        "returned": "Your quotation was returned for revision",
+        "rejected": "Your quotation was rejected",
+        "pending": "Your quotation moved to the next approver",
+    }
+    accents = {
+        "approved": "#10B981",
+        "returned": "#B45309",
+        "rejected": "#DC2626",
+        "pending": "#4F46E5",
+    }
+    reason = (
+        f"<p style='padding:12px;background:#F3F4F6;border-radius:6px;font-size:14px'>"
+        f"<strong>{decided_by}</strong> wrote: {note}</p>"
+        if note
+        else ""
+    )
+    html = render_email(
+        heading=headings.get(outcome, "Your quotation was updated"),
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{quotation_number}</strong> is now "
+            f"<strong>{outcome.replace('_', ' ')}</strong>.</p>{reason}"
+        ),
+        button_label="Open the quotation",
+        button_url=f"{settings.FRONTEND_URL}/app/quotations/{quotation_id}",
+        accent=accents.get(outcome, "#4F46E5"),
+    )
+    return send_email(email, f"{quotation_number}: {outcome.replace('_', ' ')}", html)

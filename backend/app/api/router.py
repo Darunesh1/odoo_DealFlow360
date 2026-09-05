@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     admin,
+    approvals,
     auth,
     catalog,
     health,
@@ -27,6 +28,7 @@ api_router.include_router(products.router, tags=["Products"])
 api_router.include_router(warehouses.router, prefix="/admin", tags=["Warehouses"])
 api_router.include_router(lookups.router, prefix="/lookups", tags=["Lookups"])
 api_router.include_router(quotations.router, tags=["Quotations"])
+api_router.include_router(approvals.router, tags=["Approvals"])
 
 # Operational routes, mounted at the root for orchestrator probes.
 health_router = health.router

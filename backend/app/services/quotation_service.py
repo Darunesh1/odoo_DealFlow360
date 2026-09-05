@@ -599,6 +599,12 @@ async def submit_quotation(
     )
     await db.commit()
 
+    # After the commit, never before: a rolled-back submission must not have
+    # already told a manager that something is waiting on them.
+    from app.services.approval_notifications import notify_submitted
+
+    await notify_submitted(db, approval=approval, quotation=quotation)
+
     quotation = await ensure_quotation_loaded(db, quotation.id)
     return quotation, quotation.approval
 

@@ -14,6 +14,7 @@ Two invariants the seeded rules encode and nothing here may break:
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import enum
 from typing import Optional, Sequence
 import uuid
 
@@ -29,8 +30,10 @@ from app.models.approval import (
     ApprovalStepStatus,
     ApprovalTrigger,
 )
+from app.models.analytics import AuditAction
 from app.models.quotation import Quotation, QuotationStatus, RiskBand
 from app.models.user import Role, User
+from app.services import audit_service
 
 
 async def list_rules(db: AsyncSession) -> Sequence[ApprovalRule]:
@@ -186,3 +189,151 @@ async def latest_for(db: AsyncSession, quotation_id: uuid.UUID) -> Optional[Appr
         .execution_options(populate_existing=True)
     )
     return result.scalars().first()
+
+
+# --------------------------------------------------------------------------- #
+# Decisions
+# --------------------------------------------------------------------------- #
+
+class Decision(str, enum.Enum):
+    APPROVE = "approve"
+    RETURN = "return"
+    REJECT = "reject"
+
+
+def current_step(approval: Approval) -> Optional[ApprovalStep]:
+    """The step whose turn it is: the first one still pending.
+
+    The chain is sequential by definition - "Sales Manager, then Finance" -
+    so Finance cannot act before the manager has, and this is what enforces it.
+    """
+    return next(
+        (step for step in approval.steps if step.status == ApprovalStepStatus.PENDING),
+        None,
+    )
+
+
+def can_act(approval: Approval, user: User) -> bool:
+    """Whether this user may decide the step that is currently waiting."""
+    step = current_step(approval)
+    if step is None or approval.status != ApprovalStatus.PENDING:
+        return False
+    # Admin is never an approval *step*, but an admin must still be able to
+    # unblock a chain whose approver has left the company.
+    return user.has_role(step.role, Role.ADMIN)
+
+
+async def pending_for(
+    db: AsyncSession, user: User, *, limit: int = 100
+) -> Sequence[Approval]:
+    """Approvals waiting on this user, newest first.
+
+    Filtered by the role of the step that is actually current, so a Finance
+    user does not see a high-risk quote still sitting with the Sales Manager.
+    """
+    result = await db.execute(
+        select(Approval)
+        .where(Approval.status == ApprovalStatus.PENDING)
+        .order_by(Approval.submitted_at.desc())
+        .limit(limit)
+    )
+    return [
+        approval for approval in result.scalars().all() if can_act(approval, user)
+    ]
+
+
+async def decide(
+    db: AsyncSession,
+    *,
+    approval: Approval,
+    quotation: Quotation,
+    user: User,
+    decision: "Decision",
+    note: Optional[str] = None,
+) -> Approval:
+    """Records one reviewer's verdict and moves the chain on.
+
+    Approving the last step approves the quotation. Approving any earlier step
+    simply leaves the next one pending, which is the whole of "Sales Manager,
+    then Finance" - there is no separate advance step to forget to call.
+    """
+    if approval.status != ApprovalStatus.PENDING:
+        raise ValueError("This approval round has already been decided")
+
+    step = current_step(approval)
+    if step is None:
+        raise ValueError("There is no step waiting on a decision")
+    if not user.has_role(step.role, Role.ADMIN):
+        raise ValueError(f"This step is waiting on {step.role.value.replace('_', ' ')}")
+
+    # A rejection or a return without a reason is unreviewable later, and A3
+    # requires the reason to be logged.
+    if decision in {Decision.RETURN, Decision.REJECT} and not (note or "").strip():
+        raise ValueError("Give a reason when returning or rejecting")
+
+    now = datetime.now(timezone.utc)
+    step.decided_by_id = user.id
+    step.decided_by_name = user.full_name or user.email
+    step.decided_at = now
+    step.note = note
+
+    if decision == Decision.APPROVE:
+        step.status = ApprovalStepStatus.APPROVED
+        remaining = current_step(approval)
+        if remaining is None:
+            approval.status = ApprovalStatus.APPROVED
+            approval.decided_at = now
+            quotation.status = QuotationStatus.APPROVED
+    elif decision == Decision.RETURN:
+        step.status = ApprovalStepStatus.RETURNED
+        approval.status = ApprovalStatus.RETURNED
+        approval.decided_at = now
+        # Back to the rep's hands. Resubmitting opens round N+1 rather than
+        # reopening this one, so this round keeps its own reason forever.
+        quotation.status = QuotationStatus.DRAFT
+        _skip_remaining(approval)
+    else:
+        step.status = ApprovalStepStatus.REJECTED
+        approval.status = ApprovalStatus.REJECTED
+        approval.decided_at = now
+        quotation.status = QuotationStatus.REJECTED
+        _skip_remaining(approval)
+
+    quotation.last_activity_at = now
+    db.add(step)
+    db.add(approval)
+    db.add(quotation)
+
+    audit_service.record(
+        db,
+        entity_type=audit_service.ENTITY_QUOTATION,
+        entity_id=quotation.id,
+        action=_AUDIT_ACTION[decision],
+        user=user,
+        reason=note,
+        context={
+            "round": approval.round_number,
+            "step": step.step_order,
+            "role": step.role.value,
+            "quotation_number": quotation.number,
+        },
+    )
+    return approval
+
+
+def _skip_remaining(approval: Approval) -> None:
+    """Marks later steps skipped rather than leaving them pending.
+
+    A returned round with a Finance step still showing "pending" reads as if
+    Finance owes an answer they will never be asked for.
+    """
+    for step in approval.steps:
+        if step.status == ApprovalStepStatus.PENDING:
+            step.status = ApprovalStepStatus.SKIPPED
+
+
+_AUDIT_ACTION = {
+    Decision.APPROVE: AuditAction.APPROVED,
+    Decision.RETURN: AuditAction.RETURNED,
+    Decision.REJECT: AuditAction.REJECTED,
+}
