@@ -5,6 +5,7 @@ import {
   RequireAdmin,
   RequireAuth,
   RequireGuest,
+  RequireRole,
 } from "@/components/route-guards";
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/features/auth/auth-context";
@@ -22,6 +23,8 @@ const ForgotPasswordPage = lazy(() => import("@/pages/auth/forgot-password"));
 const ResetPasswordPage = lazy(() => import("@/pages/auth/reset-password"));
 const VerifyEmailPage = lazy(() => import("@/pages/auth/verify-email"));
 const DashboardPage = lazy(() => import("@/pages/app/dashboard"));
+const QuotationsPage = lazy(() => import("@/pages/app/quotations"));
+const CatalogPage = lazy(() => import("@/pages/admin/catalog"));
 const ProfilePage = lazy(() => import("@/pages/app/profile"));
 const SettingsPage = lazy(() => import("@/pages/app/settings"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/users"));
@@ -76,8 +79,24 @@ export default function App() {
               }
             >
               <Route index element={<DashboardPage />} />
+              <Route
+                path="quotations"
+                element={
+                  <RequireRole roles={["admin", "sales_rep", "sales_manager"]}>
+                    <QuotationsPage />
+                  </RequireRole>
+                }
+              />
               <Route path="profile" element={<ProfilePage />} />
               <Route path="settings" element={<SettingsPage />} />
+              <Route
+                path="admin/catalog"
+                element={
+                  <RequireAdmin>
+                    <CatalogPage />
+                  </RequireAdmin>
+                }
+              />
               <Route
                 path="admin/users"
                 element={

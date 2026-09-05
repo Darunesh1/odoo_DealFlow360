@@ -1,14 +1,9 @@
 import {
   BookOpenIcon,
-  CheckCircle2Icon,
-  FileTextIcon,
-  LayersIcon,
   LayoutDashboardIcon,
-  PackageIcon,
-  RepeatIcon,
-  ReceiptTextIcon,
+  FileTextIcon,
   ShieldCheckIcon,
-  TrendingUpIcon,
+  PackageIcon,
   UsersIcon,
 } from "lucide-react"
 import type { ComponentType } from "react"
@@ -43,22 +38,17 @@ interface NavItem {
 const PLATFORM: NavItem[] = [
   { title: "Dashboard", url: "/app", icon: LayoutDashboardIcon },
   { title: "Quotations", url: "/app/quotations", icon: FileTextIcon, nested: true },
-  { title: "Approvals", url: "/app/approvals", icon: CheckCircle2Icon, nested: true },
-  { title: "Fulfillment", url: "/app/fulfillment", icon: LayersIcon, nested: true },
-  { title: "Subscriptions", url: "/app/subscriptions", icon: RepeatIcon, nested: true },
-  { title: "Invoices", url: "/app/invoices", icon: ReceiptTextIcon, nested: true },
-  { title: "Deal Health", url: "/app/health", icon: TrendingUpIcon, nested: true },
-  { title: "Reports", url: "/app/reports", icon: BookOpenIcon, nested: true },
-  { title: "Products", url: "/app/products", icon: PackageIcon, nested: true },
 ]
 
 const ADMINISTRATION: NavItem[] = [
+  { title: "Catalog", url: "/app/admin/catalog", icon: PackageIcon, nested: true },
   { title: "Users", url: "/app/admin/users", icon: UsersIcon, nested: true },
 ]
 
 export function AppSidebar() {
-  const { isAdmin } = useAuth()
+  const { isAdmin, hasRole } = useAuth()
   const { pathname } = useLocation()
+  const canSeeSales = hasRole("admin", "sales_rep", "sales_manager")
 
   const isActive = (item: NavItem) =>
     item.nested ? pathname.startsWith(item.url) : pathname === item.url
@@ -90,7 +80,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {renderGroup("Sales Operations", PLATFORM)}
+        {canSeeSales && renderGroup("Sales Operations", PLATFORM)}
         {isAdmin && renderGroup("Administration", ADMINISTRATION)}
 
         <SidebarGroup className="mt-auto">
