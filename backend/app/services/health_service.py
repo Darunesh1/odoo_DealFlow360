@@ -288,8 +288,6 @@ async def sweep(db: AsyncSession) -> int:
 
     if raised:
         await db.commit()
-        # "At-risk deals" on the dashboard just moved.
-        await cache.bump(cache.NS_DASHBOARD)
     return raised
 
 
@@ -346,7 +344,4 @@ async def act(
         reason=note or action.value,
         context={"alert_type": alert.alert_type.value},
     )
-    # Resolving one changes the at-risk tile, which otherwise stayed stale
-    # until the TTL expired or something unrelated bumped the namespace.
-    await cache.bump(cache.NS_DASHBOARD)
     return alert

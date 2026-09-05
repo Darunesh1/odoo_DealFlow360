@@ -422,15 +422,33 @@ weaker confirmation path: the portal's Confirm calls `order_service.confirm_quot
 `core/cache.py` keys reads as `cache:{namespace}:v{n}:{suffix}`, where `n` comes from a counter in
 Redis. **Invalidation is one `INCR` on that counter**, which orphans the old keys to expire on
 their own TTL — O(1), safe when two writers race, and with no key list to keep in step. Bump
-*after* the write, never before. Every Redis call is guarded: with Redis down the loader still runs
-and the request still succeeds, just uncached.
+*after* the write, never before.
 
-Namespaces and what invalidates them: `catalog` (any catalog write, `rebuild_variant_prices`),
-`quotation` (upsell dismissals, a Redis set with a day's TTL), `dashboard` and `report` (order
-confirmation, approval decisions, the health sweep).
+| Namespace | What it holds | What invalidates it |
+|---|---|---|
+| `catalog` | the picker's products, tiers, currencies, warehouses, categories, the KPI stats | every write in `catalog_service`, and `rebuild_variant_prices` |
+| `report` | report aggregates keyed on the filter set, and each rep's trailing discount average | order confirmation — the only thing that writes `sales_records` |
+| `quotation` | upsell dismissals, a Redis set with a day's TTL | its own expiry |
 
-`with_lock` is `SET NX EX` held for a block — used for confirm, the invoice run and per-subscription
-billing, so a double-click or a retried task produces one of each.
+**The dashboard is deliberately not cached.** Its tiles cost ~10 ms, they are per-viewer so reuse
+is low, and nearly every write in the system moves one — a quotation created, a line edited, a
+split accepted, a payment taken, a credit applied. Correct invalidation would mean a bump at a
+dozen call sites that rots the first time someone adds a thirteenth, and the whole point of those
+tiles is that they agree with the list they link to.
+
+Anything that *is* cached is cached because it is expensive and has exactly one writer. That is the
+test to apply before adding another.
+
+**Failure behaviour differs on purpose.** Reads degrade: `cached_json`, `bump`, the dismissal sets
+and the rate limiter all catch a Redis failure, log it, and let the request through — with Redis
+down every screen still loads, just uncached. `with_lock` **fails closed**, because reading
+uncached is merely slower whereas confirming an order twice writes the sales history twice and
+there is no unique index to catch it. A missing lock raises `LockUnavailable` → **503**; losing a
+race raises `LockNotAcquired` → **409**, both handled once in `main.py` so a double-clicked Confirm
+is a retry rather than a stack trace.
+
+`with_lock` is `SET NX EX` held for a block — used for confirm, split planning, the invoice run,
+per-subscription billing and credit-note numbering.
 
 Three jobs run on Celery Beat (`make beat`): backorder consolidation every 15 minutes, recurring
 billing daily at 02:00 UTC, the deal-health sweep hourly. `tasks/scheduled_tasks.py` dispatches by

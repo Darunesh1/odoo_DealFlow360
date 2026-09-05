@@ -27,10 +27,14 @@ from app.core.redis import get_redis_client
 logger = logging.getLogger(__name__)
 
 # Namespaces. One per family of reads that share an invalidation trigger, so a
-# price edit does not throw away the dashboard's aggregates as well.
+# price edit does not throw away the reports as well.
+#
+# There is deliberately no dashboard namespace: its tiles are read live. They
+# are cheap, per-viewer, and moved by nearly every write in the system, so a
+# cache there buys tens of milliseconds and risks a tile disagreeing with the
+# list it links to.
 NS_CATALOG = "catalog"
 NS_QUOTATION = "quotation"
-NS_DASHBOARD = "dashboard"
 NS_REPORT = "report"
 
 CACHE_PREFIX = "cache"
@@ -39,7 +43,6 @@ LOCK_PREFIX = "lock"
 # Sensible defaults; callers may override per key.
 TTL_CATALOG = 300
 TTL_SUGGESTIONS = 60
-TTL_DASHBOARD = 30
 TTL_REPORT = 300
 TTL_REP_AVERAGE = 3600
 
@@ -116,7 +119,11 @@ async def drop(namespace: str, suffix: str) -> None:
 
 
 class LockNotAcquired(RuntimeError):
-    """Raised when another worker already holds the lock."""
+    """Someone else is already doing this. Retrying later may succeed."""
+
+
+class LockUnavailable(RuntimeError):
+    """Redis could not be reached, so no lock could be taken at all."""
 
 
 @asynccontextmanager
@@ -125,10 +132,25 @@ async def with_lock(name: str, ttl: int = 30) -> AsyncIterator[None]:
 
     The TTL is the safety net: a worker killed mid-block releases the lock when
     it expires rather than wedging the resource forever.
+
+    Unlike the caches, this one **fails closed**. Reading uncached is merely
+    slower, but confirming an order twice writes the sales history twice, and
+    there is no unique index on sales_records to catch it. If Redis is
+    unreachable the caller is told so rather than proceeding unprotected -
+    which is also academic in practice, because Redis is the Celery broker, so
+    an outage has already stopped the workers.
     """
     redis = get_redis_client()
     key = f"{LOCK_PREFIX}:{name}"
-    acquired = await redis.set(key, "1", nx=True, ex=max(ttl, 1))
+    try:
+        acquired = await redis.set(key, "1", nx=True, ex=max(ttl, 1))
+    except Exception as exc:
+        logger.error(f"Could not reach Redis to lock {name}: {exc}")
+        raise LockUnavailable(
+            "The coordination service is unavailable, so this cannot be done "
+            "safely right now. Please try again in a moment."
+        ) from exc
+
     if not acquired:
         raise LockNotAcquired(f"Another operation on {name} is already running")
     try:
@@ -137,6 +159,8 @@ async def with_lock(name: str, ttl: int = 30) -> AsyncIterator[None]:
         try:
             await redis.delete(key)
         except Exception as exc:
+            # The TTL will clear it; losing the release is not worth failing a
+            # request that has already done its work.
             logger.warning(f"Lock release failed for {key}: {exc}")
 
 

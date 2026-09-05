@@ -219,3 +219,36 @@ async def test_a_rep_dashboard_agrees_with_their_approvals_screen(db_session):
     assert data["awaiting_approval"] == 1
     assert data["open_quotations"] == 1
     assert data["role"] == "rep"
+
+
+async def test_the_dashboard_reflects_a_write_immediately(db_session):
+    """It is not cached, precisely so a tile cannot disagree with its list."""
+    from datetime import date
+
+    from app.models.catalog import Currency
+    from app.models.quotation import Quotation, QuotationStatus
+    from app.services import report_service
+    from tests.conftest import make_user
+
+    db_session.add(
+        Currency(code="USD", name="US Dollar", symbol="$", rate_to_base=1, is_base=True)
+    )
+    await db_session.commit()
+
+    rep = await make_user(db_session, "rep-live@example.com")
+    first = await _stale_quotation(db_session, days=1)
+    first.owner_id = rep.id
+    db_session.add(first)
+    await db_session.commit()
+
+    before = await report_service.dashboard(db_session, rep)
+    assert before["open_quotations"] == 1
+
+    second = await _stale_quotation(db_session, days=1)
+    second.owner_id = rep.id
+    db_session.add(second)
+    await db_session.commit()
+
+    # No bump, no TTL wait: the next read simply sees it.
+    after = await report_service.dashboard(db_session, rep)
+    assert after["open_quotations"] == 2

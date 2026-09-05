@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.router import api_router, health_router
+from app.core.cache import LockNotAcquired, LockUnavailable
 from app.core.config import settings
 from app.core.database import init_db
 
@@ -52,6 +54,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(LockNotAcquired)
+async def _lock_busy(request: Request, exc: LockNotAcquired) -> JSONResponse:
+    """A double-clicked button, or two people acting on the same order.
+
+    409 rather than 500: nothing is broken, the caller simply lost a race and
+    retrying is the right response. Handled here so every route that takes a
+    lock behaves the same way without repeating the try/except.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": "That is already being processed. Give it a moment."},
+    )
+
+
+@app.exception_handler(LockUnavailable)
+async def _lock_unavailable(request: Request, exc: LockUnavailable) -> JSONResponse:
+    """Redis is unreachable, so the operation cannot be made safe."""
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc)},
+    )
+
 
 app.include_router(health_router, tags=["Status"])
 app.include_router(api_router)

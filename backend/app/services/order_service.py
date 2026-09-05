@@ -99,7 +99,6 @@ async def plan_fulfillment(
         )
         await db.commit()
 
-    await cache.bump(cache.NS_DASHBOARD)
     return await fulfillment_service.get_for_quotation(db, quotation.id)
 
 
@@ -177,11 +176,10 @@ async def confirm_quotation(
         await db.commit()
 
     # Confirmation is the only thing that writes sales history, so it is the
-    # only thing that can move a report. Bumped after the commit, so a reader
-    # racing the write sees the old figures and then the invalidation, never
-    # the reverse.
+    # only thing that can move a report - and the only thing that needs to
+    # invalidate one. Bumped after the commit, so a reader racing the write
+    # sees the old figures and then the invalidation, never the reverse.
     await cache.bump(cache.NS_REPORT)
-    await cache.bump(cache.NS_DASHBOARD)
 
     return await fulfillment_service.get_for_quotation(db, quotation.id)
 

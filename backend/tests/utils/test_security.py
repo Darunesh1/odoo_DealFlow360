@@ -74,3 +74,19 @@ def test_parse_uuid():
     assert parse_uuid(str(value)) == value
     assert parse_uuid("not-a-uuid") is None
     assert parse_uuid(None) is None
+
+
+async def test_a_second_holder_is_refused_the_same_lock():
+    """Losing the race is a 409 for the caller, not a crash."""
+    import pytest
+
+    from app.core.cache import LockNotAcquired, with_lock
+
+    async with with_lock("test-double-click", ttl=5):
+        with pytest.raises(LockNotAcquired):
+            async with with_lock("test-double-click", ttl=5):
+                pass
+
+    # Released on the way out, so the next caller gets it.
+    async with with_lock("test-double-click", ttl=5):
+        pass

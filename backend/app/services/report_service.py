@@ -349,8 +349,8 @@ async def dashboard(db: AsyncSession, viewer) -> dict[str, Any]:
     """The home screen, scoped to whoever is looking at it (mockup screen 2).
 
     Every figure is computed from the same query as the screen its tile links
-    to, and the cache key carries the viewer - a single shared key would serve
-    one person's scoped numbers to everybody.
+    to, and read live - see the note at the bottom for why this one is not
+    cached.
     """
     from app.models.user import Role
 
@@ -515,7 +515,12 @@ async def dashboard(db: AsyncSession, viewer) -> dict[str, Any]:
             ],
         }
 
-    viewer_key = str(viewer.id) if viewer is not None else "anonymous"
-    return await cached_json(
-        cache.NS_DASHBOARD, f"home:{role_key}:{viewer_key}", cache.TTL_DASHBOARD, load
-    )
+    # Deliberately NOT cached. It measures ~35 ms at three hundred products,
+    # it is per-viewer so the reuse is low anyway, and every write in the
+    # system moves at least one tile - a quotation created, a line edited, a
+    # split accepted, a payment taken, a credit applied. Correct invalidation
+    # would mean a bump at a dozen call sites that would rot the first time
+    # someone added a thirteenth, and the entire point of these tiles is that
+    # they agree with the screens they link to. Thirty milliseconds is not
+    # worth a number that disagrees with the list beneath it.
+    return await load()
