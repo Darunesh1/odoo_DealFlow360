@@ -6,7 +6,7 @@ quotations and nothing else, no cost or margin reaches them, and accepting
 their counter re-runs the governance rather than quietly changing the price.
 """
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -156,7 +156,11 @@ async def _priced_quotation(db_session, discount: float = 0.0):
     quotation = await quotation_service.create_draft_quotation(
         db_session,
         owner=rep,
-        obj_in=QuotationCreate(customer_id=customer.id, currency="USD"),
+        obj_in=QuotationCreate(
+            customer_id=customer.id,
+            currency="USD",
+            requested_delivery_date=date.today() + timedelta(days=14),
+        ),
     )
     quotation = await quotation_service.add_line(
         db_session,

@@ -356,6 +356,26 @@ export default function QuotationDetailPage() {
               <dl className="space-y-1.5 border-t pt-4 text-sm">
                 <Detail label="Owner" value={quotation.owner_name ?? "—"} />
                 <Detail
+                  label="Delivery requested"
+                  value={
+                    quotation.requested_delivery_date
+                      ? new Date(
+                          quotation.requested_delivery_date
+                        ).toLocaleDateString()
+                      : "—"
+                  }
+                />
+                <Detail
+                  label="Delivery promised"
+                  value={
+                    quotation.promised_delivery_date
+                      ? new Date(
+                          quotation.promised_delivery_date
+                        ).toLocaleDateString()
+                      : "— set when the split is accepted"
+                  }
+                />
+                <Detail
                   label="Valid until"
                   value={
                     quotation.valid_until

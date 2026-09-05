@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom"
 import { z } from "zod"
 
 import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
@@ -33,17 +34,30 @@ import {
   useQuotationMutations,
 } from "@/features/quotations/use-quotation"
 
+/** Today, as the yyyy-mm-dd a date input wants. */
+function today() {
+  return new Date().toISOString().slice(0, 10)
+}
+
 const schema = z.object({
   customer_id: z.string().min(1, "Choose a customer"),
   currency: z.string().min(3, "Choose a currency"),
+  requested_delivery_date: z
+    .string()
+    .min(1, "Pick a delivery date")
+    .refine((value) => value >= today(), "That date has already passed"),
 })
 
 type Values = z.infer<typeof schema>
 
 /**
- * Customer and currency are the only two things that must be settled before a
- * line can be priced - the tier ceiling and the price list both hang off them.
- * Everything else is edited on the builder itself.
+ * The three things a quotation cannot be started without.
+ *
+ * Customer and currency decide how every line is priced - the tier ceiling and
+ * the price list both hang off them. The delivery date is what the warehouse
+ * split is promised against and what delivery slippage is later measured from,
+ * so a quotation without one leaves both unanswerable. Everything else is
+ * edited on the builder itself.
  */
 export function NewQuotationDialog({
   open,
@@ -58,7 +72,11 @@ export function NewQuotationDialog({
 
   const form = useForm<Values>({
     resolver: zodResolver(schema),
-    defaultValues: { customer_id: "", currency: "USD" },
+    defaultValues: {
+      customer_id: "",
+      currency: "USD",
+      requested_delivery_date: "",
+    },
   })
 
   const onSubmit = async (values: Values) => {
@@ -129,6 +147,24 @@ export function NewQuotationDialog({
                   </Select>
                   <FormDescription>
                     Prices resolve from this customer&apos;s tier in this currency.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="requested_delivery_date"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Requested delivery date</FormLabel>
+                  <FormControl>
+                    <Input type="date" min={today()} {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    What the customer asked for. The split is promised against
+                    it, and a promise it can no longer meet raises an alert.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

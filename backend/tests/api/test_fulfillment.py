@@ -8,6 +8,7 @@ import pytest
 
 from app.models.fulfillment import AllocationStatus, FulfillmentStatus
 from app.models.inventory import StockItem, Warehouse
+from app.models.user import Role
 from app.services import fulfillment_service
 
 
@@ -231,3 +232,68 @@ async def test_an_override_cannot_overdraw_a_warehouse(db_session):
                 }
             ],
         )
+
+
+async def test_a_quotation_needs_a_delivery_date(db_session):
+    """It is what the split is promised against, so it cannot be optional."""
+    from datetime import date, timedelta
+
+    import pydantic
+
+    from app.schemas.quotation import QuotationCreate
+    from app.services import quotation_service
+
+    product, variant, _, _ = await _catalog(db_session)
+
+    with pytest.raises(pydantic.ValidationError):
+        QuotationCreate(customer_id=variant.id, currency="USD")
+
+    from sqlalchemy import select
+
+    from app.models.customer import Customer, CustomerTier
+    from tests.conftest import make_user
+
+    tier = (await db_session.execute(select(CustomerTier))).scalars().first()
+    customer = Customer(name="Acme Corp", tier_id=tier.id)
+    db_session.add(customer)
+    await db_session.commit()
+    rep = await make_user(db_session, "rep-date@example.com", roles=(Role.SALES_REP,))
+
+    with pytest.raises(ValueError, match="in the past"):
+        await quotation_service.create_draft_quotation(
+            db_session,
+            owner=rep,
+            obj_in=QuotationCreate(
+                customer_id=customer.id,
+                currency="USD",
+                requested_delivery_date=date.today() - timedelta(days=1),
+            ),
+        )
+
+
+async def test_accepting_a_split_promises_a_date_we_can_keep(db_session):
+    """Never the customer's date when a backorder clears after it."""
+    from datetime import date, timedelta
+
+    from app.models.quotation import Quotation
+    from app.services import order_service
+
+    product, variant, main, east = await _catalog(db_session)
+    quotation = await _order(db_session, product, variant, 24)
+    # Sooner than anything can restock.
+    quotation.requested_delivery_date = date.today() + timedelta(days=1)
+    db_session.add(quotation)
+    await db_session.commit()
+
+    fulfillment = await order_service.confirm_quotation(db_session, quotation=quotation)
+    await fulfillment_service.accept_split(db_session, fulfillment=fulfillment)
+    await db_session.commit()
+
+    restock = max(
+        allocation.expected_restock_date
+        for allocation in fulfillment.allocations
+        if allocation.expected_restock_date is not None
+    )
+    refreshed = await db_session.get(Quotation, quotation.id)
+    assert refreshed.promised_delivery_date == restock
+    assert refreshed.promised_delivery_date > refreshed.requested_delivery_date

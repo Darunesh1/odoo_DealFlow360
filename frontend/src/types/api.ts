@@ -1114,7 +1114,8 @@ export interface QuotationCreateInput {
   recipient_email?: string | null
   order_discount_percent?: number
   notes?: string | null
-  requested_delivery_date?: string | null
+  /** Required — the split is promised against it. */
+  requested_delivery_date: string
   valid_until?: string | null
 }
 

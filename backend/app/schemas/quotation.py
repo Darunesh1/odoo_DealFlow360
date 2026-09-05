@@ -189,7 +189,10 @@ class QuotationCreate(BaseModel):
     recipient_email: Optional[EmailStr] = None
     order_discount_percent: float = Field(default=0, ge=0, le=100)
     notes: Optional[str] = None
-    requested_delivery_date: Optional[date] = None
+    # Required, not optional. It is what the fulfillment split is promised
+    # against and what delivery slippage is measured from - a quotation with no
+    # date makes both of those unanswerable.
+    requested_delivery_date: date
     valid_until: Optional[date] = None
 
 

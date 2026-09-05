@@ -6,6 +6,7 @@ import {
   ExternalLinkIcon,
   MergeIcon,
   PencilIcon,
+  ReceiptIcon,
   TruckIcon,
 } from "lucide-react"
 
@@ -36,6 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useAuth } from "@/features/auth/use-auth"
+import { useInvoiceOrder } from "@/features/billing/use-billing"
 import {
   useFulfillment,
   useFulfillmentActions,
@@ -67,6 +69,7 @@ export default function FulfillmentDetailPage() {
 
   const { data: fulfillment, isLoading } = useFulfillment(fulfillmentId)
   const actions = useFulfillmentActions(fulfillmentId)
+  const invoiceOrder = useInvoiceOrder()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState<OverrideRowInput[]>([])
 
@@ -80,6 +83,9 @@ export default function FulfillmentDetailPage() {
     () => (fulfillment?.allocations ?? []).reduce((sum, a) => sum + a.quantity_shipped, 0),
     [fulfillment]
   )
+  // Nothing is billable until it has physically shipped, so the button only
+  // appears once something has.
+  const canInvoice = canOperate && shippedUnits > 0
 
   if (isLoading) {
     return <p className="text-sm text-muted-foreground">Loading the split…</p>
@@ -122,11 +128,22 @@ export default function FulfillmentDetailPage() {
         title={`${fulfillment.quotation_number} · ${fulfillment.customer_name}`}
         description="The recommended warehouse split for this order, based on live stock."
         actions={
-          <Button variant="outline" size="sm" asChild>
-            <Link to={`/app/quotations/${fulfillment.quotation_id}`}>
-              <ExternalLinkIcon /> Open quotation
-            </Link>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {canInvoice ? (
+              <Button
+                size="sm"
+                onClick={() => invoiceOrder.mutate(fulfillment.quotation_id)}
+                disabled={invoiceOrder.isPending}
+              >
+                <ReceiptIcon /> Invoice what has shipped
+              </Button>
+            ) : null}
+            <Button variant="outline" size="sm" asChild>
+              <Link to={`/app/quotations/${fulfillment.quotation_id}`}>
+                <ExternalLinkIcon /> Open quotation
+              </Link>
+            </Button>
+          </div>
         }
       />
 
@@ -149,6 +166,12 @@ export default function FulfillmentDetailPage() {
         {shippedUnits > 0 ? (
           <span className="text-sm text-muted-foreground">
             · {shippedUnits} units shipped
+          </span>
+        ) : null}
+        {fulfillment.requested_delivery_date ? (
+          <span className="text-sm text-muted-foreground">
+            · requested by{" "}
+            {new Date(fulfillment.requested_delivery_date).toLocaleDateString()}
           </span>
         ) : null}
       </div>

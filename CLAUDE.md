@@ -299,6 +299,20 @@ All price editing happens on the product form. The Price Lists tab is deliberate
 there is only ever one place a price comes from.
 
 
+## Delivery dates
+
+`requested_delivery_date` is **required** on `QuotationCreate` and must not be
+in the past. It is not decoration: the split is promised against it and
+delivery slippage is measured from it, so a quotation without one leaves both
+unanswerable.
+
+`promised_delivery_date` is written **once, when the split is accepted** — not
+at creation, because until stock is actually reserved there is nothing to
+promise against. It is `max(requested, earliest everything can be dispatched)`,
+where the earliest is the latest backorder restock date. Promising the
+customer's date when a backorder clears after it would be a promise already
+known to be false.
+
 ## The order lifecycle
 
 One row carries a deal from start to finish: **a CONFIRMED quotation *is* the sales order.** The
@@ -325,6 +339,13 @@ two states. `consolidate_backorders` folds a cleared backorder into the shipment
 for that warehouse rather than opening a second one.
 
 ## Billing
+
+One-time invoices are raised **by hand** — Finance clicks *Invoice what has
+shipped* on the fulfillment screen, which calls
+`POST /quotations/{id}/invoice`. Recurring invoices are raised **automatically**
+by Celery Beat at 02:00 UTC daily. There is deliberately no automatic one-time
+invoicing on despatch: a partial shipment often wants batching with the next
+one, and that is a commercial decision rather than a rule.
 
 Two invariants, both enforced by the schema rather than by convention:
 

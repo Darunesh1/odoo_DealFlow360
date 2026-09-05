@@ -276,7 +276,31 @@ async def accept_split(
     if user is not None:
         fulfillment.accepted_by_id = user.id
     fulfillment.status = _roll_up(fulfillment)
+
+    # The promise is made here, once the split is real, because until stock is
+    # actually reserved there is nothing to promise against. It is the later of
+    # what the customer asked for and the earliest everything can be dispatched
+    # - promising their date when a backorder clears after it would be a
+    # promise we already know we cannot keep.
+    earliest = max(
+        [date.today()]
+        + [
+            allocation.expected_restock_date
+            for allocation in fulfillment.allocations
+            if allocation.status == AllocationStatus.BACKORDERED
+            and allocation.expected_restock_date is not None
+        ]
+    )
+    requested = fulfillment.requested_delivery_date
+    fulfillment.promised_ship_date = earliest
     db.add(fulfillment)
+
+    quotation = await db.get(Quotation, fulfillment.quotation_id)
+    if quotation is not None:
+        quotation.promised_delivery_date = (
+            max(earliest, requested) if requested else earliest
+        )
+        db.add(quotation)
 
     audit_service.record(
         db,

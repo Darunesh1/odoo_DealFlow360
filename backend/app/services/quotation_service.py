@@ -266,12 +266,23 @@ async def delete_quotation(db: AsyncSession, quotation: Quotation) -> None:
     await db.commit()
 
 
+def _check_delivery_date(requested: date) -> None:
+    """A date already gone is not a request, it is a mistake.
+
+    Caught here rather than in the schema so the message names the field in
+    the same voice as every other business rule.
+    """
+    if requested < date.today():
+        raise ValueError("The requested delivery date is in the past")
+
+
 async def create_draft_quotation(
     db: AsyncSession,
     *,
     owner: User,
     obj_in: QuotationCreate,
 ) -> Quotation:
+    _check_delivery_date(obj_in.requested_delivery_date)
     customer = await get_customer_by_id(db, obj_in.customer_id)
     if not customer:
         raise ValueError("Customer not found")
