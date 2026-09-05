@@ -4,10 +4,10 @@ import { APP_NAME } from "@/config"
 import { cn } from "@/lib/utils"
 
 /**
- * A hull section with its keel line: the first piece laid down when a ship is
- * built, and the thing everything else is fastened to.
+ * A funnel narrowing to a single point: many deals entering at the top, one
+ * outcome at the bottom.
  */
-export function KeelMark({ className }: { className?: string }) {
+export function DealFlowMark({ className }: { className?: string }) {
   return (
     <svg
       viewBox="0 0 24 24"
@@ -43,7 +43,7 @@ export function Brand({
       )}
     >
       <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <KeelMark className="size-4" />
+        <DealFlowMark className="size-4" />
       </span>
       {showName && <span>{APP_NAME}</span>}
     </Link>

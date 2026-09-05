@@ -1,4 +1,4 @@
-# Full-stack Web Template
+# DealFlow360
 
 A production-shaped starting point for a web application. Authentication, email flows,
 background jobs and an admin area are already wired together, so the first thing you build
@@ -213,8 +213,6 @@ frontend/src/
 3. **Copy** — the landing page sections in `src/pages/landing.tsx` are scaffolding. The
    pricing tiers in particular are placeholders, there so you have a working section to point
    at your own plans.
-
-> The default name **Keel** is a placeholder, not this project's identity. Replace it.
 
 Validation rules live in `src/features/auth/schemas.ts` and mirror the backend's own rules in
 `backend/app/schemas/user.py`. If you change a password policy, change both.

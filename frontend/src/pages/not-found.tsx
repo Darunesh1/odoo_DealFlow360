@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom"
 
-import { KeelMark } from "@/components/brand"
+import { DealFlowMark } from "@/components/brand"
 import { ModeToggle } from "@/components/mode-toggle"
 import { Button } from "@/components/ui/button"
 
@@ -11,7 +11,7 @@ export default function NotFoundPage() {
         <ModeToggle />
       </div>
 
-      <KeelMark className="size-8 text-primary" />
+      <DealFlowMark className="size-8 text-primary" />
       <p className="label-mono mt-6 text-muted-foreground">Error 404</p>
       <h1 className="mt-3 text-3xl font-semibold">This page does not exist</h1>
       <p className="mt-3 max-w-sm text-pretty text-muted-foreground">

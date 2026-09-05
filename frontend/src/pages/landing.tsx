@@ -10,7 +10,7 @@ import {
 } from "lucide-react"
 import { Link } from "react-router-dom"
 
-import { KeelMark } from "@/components/brand"
+import { DealFlowMark } from "@/components/brand"
 import { SectionRail, type RailSection } from "@/components/section-rail"
 import {
   Accordion,
@@ -214,9 +214,9 @@ function Hero() {
             className="animate-rise mt-5 text-4xl font-semibold text-balance sm:text-5xl md:text-6xl"
             style={{ "--rise-delay": "60ms" } as React.CSSProperties}
           >
-            Lay the keel,
+            Every deal,
             <br />
-            then build the ship.
+            from first touch to close.
           </h1>
 
           <p
@@ -259,7 +259,7 @@ function Hero() {
         >
           <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
             <div className="flex items-center gap-2 border-b px-4 py-3">
-              <KeelMark className="size-4 text-primary" />
+              <DealFlowMark className="size-4 text-primary" />
               <span className="label-mono text-muted-foreground">Working on day zero</span>
               <span className="ml-auto font-mono text-xs text-muted-foreground">
                 /api/v1
@@ -428,7 +428,7 @@ export default function LandingPage() {
 
       <section className="border-b">
         <div className="mx-auto w-full max-w-6xl px-4 py-20 text-center sm:px-6 md:py-24">
-          <KeelMark className="mx-auto size-8 text-primary" />
+          <DealFlowMark className="mx-auto size-8 text-primary" />
           <h2 className="mt-6 text-3xl font-semibold text-balance md:text-4xl">
             Start with the boring parts finished
           </h2>

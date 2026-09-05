@@ -2,7 +2,7 @@ import { MenuIcon } from "lucide-react"
 import { useState } from "react"
 import { Link, Outlet } from "react-router-dom"
 
-import { Brand, KeelMark } from "@/components/brand"
+import { Brand, DealFlowMark } from "@/components/brand"
 import { ModeToggle } from "@/components/mode-toggle"
 import { Button } from "@/components/ui/button"
 import {
@@ -100,7 +100,7 @@ export function MarketingLayout() {
               <SheetContent side="right" className="w-72">
                 <SheetHeader>
                   <SheetTitle className="flex items-center gap-2">
-                    <KeelMark className="size-4 text-primary" />
+                    <DealFlowMark className="size-4 text-primary" />
                     {APP_NAME}
                   </SheetTitle>
                 </SheetHeader>

@@ -2,12 +2,12 @@ import type { ReactNode } from "react"
 import { Navigate, useLocation } from "react-router-dom"
 
 import { useAuth } from "@/features/auth/use-auth"
-import { KeelMark } from "@/components/brand"
+import { DealFlowMark } from "@/components/brand"
 
 function Resolving() {
   return (
     <div className="flex min-h-svh items-center justify-center">
-      <KeelMark className="size-7 animate-pulse text-muted-foreground" />
+      <DealFlowMark className="size-7 animate-pulse text-muted-foreground" />
       <span className="sr-only">Loading your session</span>
     </div>
   )

@@ -37,8 +37,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="FastAPI Backend Template",
-    description="A robust and reusable backend template featuring FastAPI, PostgreSQL, Redis, and Celery.",
+    title="DealFlow360 API",
+    description="Backend API for DealFlow360.",
     version="1.0.0",
     lifespan=lifespan,
 )

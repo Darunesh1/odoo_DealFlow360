@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
     EMAILS_FROM_EMAIL: Optional[str] = "no-reply@yourdomain.com"
-    EMAILS_FROM_NAME: Optional[str] = "FastAPI Template"
+    EMAILS_FROM_NAME: Optional[str] = "DealFlow360"
 
     @model_validator(mode="after")
     def _refuse_default_secret_in_production(self) -> "Settings":

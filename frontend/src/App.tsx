@@ -11,7 +11,7 @@ import { AuthProvider } from "@/features/auth/auth-context";
 import { AppLayout } from "@/layouts/app-layout";
 import { AuthLayout } from "@/layouts/auth-layout";
 import { MarketingLayout } from "@/layouts/marketing-layout";
-import { KeelMark } from "@/components/brand";
+import { DealFlowMark } from "@/components/brand";
 
 // Split per route: a first-time visitor loads the landing page without paying
 // for the sidebar, the data table and the dialogs behind the sign-in wall.
@@ -30,7 +30,7 @@ const NotFoundPage = lazy(() => import("@/pages/not-found"));
 function RouteFallback() {
   return (
     <div className="flex min-h-svh items-center justify-center">
-      <KeelMark className="size-7 animate-pulse text-muted-foreground" />
+      <DealFlowMark className="size-7 animate-pulse text-muted-foreground" />
       <span className="sr-only">Loading</span>
     </div>
   );
