@@ -37,6 +37,11 @@ const AdminWarehousesPage = lazy(() => import("@/pages/admin/management/warehous
 const AdminSubscriptionPlansPage = lazy(
   () => import("@/pages/admin/management/subscription-plans")
 );
+const ProductsPage = lazy(() => import("@/pages/admin/management/products"));
+const ProductDetailPage = lazy(
+  () => import("@/pages/admin/management/product-detail")
+);
+const WarehousesPage = lazy(() => import("@/pages/admin/management/warehouses"));
 const ProfilePage = lazy(() => import("@/pages/app/profile"));
 const SettingsPage = lazy(() => import("@/pages/app/settings"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/users"));
@@ -96,6 +101,34 @@ export default function App() {
                 element={
                   <RequireRole roles={["admin", "sales_rep", "sales_manager"]}>
                     <QuotationsPage />
+                  </RequireRole>
+                }
+              />
+              {/* The same catalog screens as Admin Management, read-only, for
+                  the roles that need to see what is sellable but configure
+                  nothing. Admin reaches them through Admin Management instead. */}
+              <Route
+                path="products"
+                element={
+                  <RequireRole roles={["sales_rep", "sales_manager", "finance"]}>
+                    <ProductsPage readOnly />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="products/:productId"
+                element={
+                  <RequireRole roles={["sales_rep", "sales_manager", "finance"]}>
+                    <ProductDetailPage readOnly />
+                  </RequireRole>
+                }
+              />
+              {/* Finance / Operations manages warehouses, per the spec. */}
+              <Route
+                path="warehouses"
+                element={
+                  <RequireRole roles={["finance"]}>
+                    <WarehousesPage />
                   </RequireRole>
                 }
               />

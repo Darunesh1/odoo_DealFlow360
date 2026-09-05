@@ -5,6 +5,7 @@ import {
   ShieldCheckIcon,
   PackageIcon,
   UsersIcon,
+  WarehouseIcon,
 } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useLocation } from "react-router-dom"
@@ -41,6 +42,16 @@ const PLATFORM: NavItem[] = [
   { title: "Quotations", url: "/app/quotations", icon: FileTextIcon, nested: true },
 ]
 
+// Shown to the roles that are NOT admins: an admin reaches the same screens
+// through Admin Management, and two identical rows in one sidebar is noise.
+const CATALOG: NavItem[] = [
+  { title: "Products", url: "/app/products", icon: PackageIcon, nested: true },
+]
+
+const OPERATIONS: NavItem[] = [
+  { title: "Warehouses", url: "/app/warehouses", icon: WarehouseIcon, nested: true },
+]
+
 const ADMINISTRATION: NavItem[] = [
   {
     title: "Admin Management",
@@ -58,6 +69,10 @@ export function AppSidebar() {
   const { isAdmin, hasRole } = useAuth()
   const { pathname } = useLocation()
   const canSeeSales = hasRole("admin", "sales_rep", "sales_manager")
+  // Catalog and warehouse entries are for non-admins only: an admin gets the
+  // same screens as tabs inside Admin Management.
+  const canSeeCatalog = !isAdmin && hasRole("sales_rep", "sales_manager", "finance")
+  const canManageWarehouses = !isAdmin && hasRole("finance")
 
   const isActive = (item: NavItem) =>
     item.nested
@@ -93,6 +108,8 @@ export function AppSidebar() {
 
       <SidebarContent>
         {canSeeSales && renderGroup("Sales Operations", PLATFORM)}
+        {canSeeCatalog && renderGroup("Catalog", CATALOG)}
+        {canManageWarehouses && renderGroup("Operations", OPERATIONS)}
         {isAdmin && renderGroup("Administration", ADMINISTRATION)}
 
         <SidebarGroup className="mt-auto">
