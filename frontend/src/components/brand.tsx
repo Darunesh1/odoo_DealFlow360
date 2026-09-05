@@ -3,10 +3,6 @@ import { Link } from "react-router-dom"
 import { APP_NAME } from "@/config"
 import { cn } from "@/lib/utils"
 
-/**
- * A funnel narrowing to a single point: many deals entering at the top, one
- * outcome at the bottom.
- */
 export function DealFlowMark({ className }: { className?: string }) {
   return (
     <svg
@@ -42,9 +38,11 @@ export function Brand({
         className
       )}
     >
-      <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-        <DealFlowMark className="size-4" />
-      </span>
+      <img 
+        src="/logo.png" 
+        alt={`${APP_NAME} logo`} 
+        className="size-7 rounded-md object-contain" 
+      />
       {showName && <span>{APP_NAME}</span>}
     </Link>
   )
