@@ -359,3 +359,38 @@ def send_change_request_email(
     return send_email(
         email, f"{customer_name} countered on {quotation_number}", html
     )
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_deal_alert_email")
+def send_deal_alert_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    quotation_id: str = "",
+    alert_type: str = "",
+    detail: str = "",
+    action: str = "nudge",
+) -> str:
+    """A nudge to the rep, or an escalation to their manager."""
+    nudging = action == "nudge"
+    html = render_email(
+        heading=(
+            "A deal needs your attention"
+            if nudging
+            else "A deal has been escalated to you"
+        ),
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{quotation_number}</strong> was flagged: "
+            f"<strong>{detail}</strong> "
+            f"({alert_type.replace('_', ' ')}).</p>"
+        ),
+        button_label="Open the quotation",
+        button_url=f"{settings.FRONTEND_URL}/app/quotations/{quotation_id}",
+        accent="#B45309" if nudging else "#DC2626",
+    )
+    return send_email(
+        email,
+        f"{'Nudge' if nudging else 'Escalated'}: {quotation_number}",
+        html,
+    )

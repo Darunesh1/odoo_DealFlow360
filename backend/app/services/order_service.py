@@ -16,6 +16,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import cache
 from app.core.cache import with_lock
 from app.models.analytics import AuditAction, SalesRecord
 from app.models.billing import BillingTiming, Subscription, SubscriptionStatus
@@ -124,6 +125,13 @@ async def confirm_quotation(
             },
         )
         await db.commit()
+
+    # Confirmation is the only thing that writes sales history, so it is the
+    # only thing that can move a report. Bumped after the commit, so a reader
+    # racing the write sees the old figures and then the invalidation, never
+    # the reverse.
+    await cache.bump(cache.NS_REPORT)
+    await cache.bump(cache.NS_DASHBOARD)
 
     return await fulfillment_service.get_for_quotation(db, quotation.id)
 

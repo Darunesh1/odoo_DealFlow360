@@ -30,6 +30,7 @@ from app.models.approval import (
     ApprovalStepStatus,
     ApprovalTrigger,
 )
+from app.core import cache
 from app.models.analytics import AuditAction
 from app.models.quotation import Quotation, QuotationStatus, RiskBand
 from app.models.user import Role, User
@@ -303,6 +304,9 @@ async def decide(
     db.add(step)
     db.add(approval)
     db.add(quotation)
+
+    # The dashboard counts pending approvals; a decision changes that count.
+    await cache.bump(cache.NS_DASHBOARD)
 
     audit_service.record(
         db,

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # deployment never gets anything beyond the administrator above.
     SEED_DEMO_USERS: bool = True
 
+    # A quotation untouched for this many days is flagged as stalled on the
+    # deal health dashboard.
+    STALLED_DEAL_DAYS: int = 7
+
     # Upsell suggestions below this margin percentage are suppressed entirely
     # (spec A6's "minimum margin thresholds"). A rep should not have to judge
     # which suggestions are safe to accept.

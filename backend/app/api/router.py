@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.endpoints import (
     admin,
+    analytics,
     approvals,
     auth,
     billing,
@@ -37,6 +38,7 @@ api_router.include_router(billing.router, tags=["Billing"])
 # A genuinely separate, restricted surface - customers only, scoped to their
 # own company, with schemas that have nowhere to put cost or margin.
 api_router.include_router(portal.router, tags=["Customer Portal"])
+api_router.include_router(analytics.router, tags=["Analytics"])
 
 # Operational routes, mounted at the root for orchestrator probes.
 health_router = health.router
