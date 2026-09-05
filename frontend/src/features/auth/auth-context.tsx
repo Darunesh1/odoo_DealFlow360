@@ -17,7 +17,7 @@ export interface AuthContextValue {
   /** True while the stored session is still being resolved on first paint. */
   isBootstrapping: boolean
   isAuthenticated: boolean
-  login: (email: string, password: string) => Promise<void>
+  login: (email: string, password: string) => Promise<User>
   logout: () => Promise<void>
   refreshUser: () => Promise<void>
 }
@@ -59,8 +59,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       tokenStore.save(data.access_token, data.refresh_token)
       setHasSession(true)
-      // Await the profile so callers can navigate into a populated app shell.
-      await queryClient.fetchQuery({
+      // Await the profile so callers can navigate into a populated shell, and
+      // return it so they can decide WHICH shell - a customer belongs in the
+      // portal, not the app.
+      return await queryClient.fetchQuery({
         queryKey: ["me"],
         queryFn: async () => (await api.get<User>("/users/me")).data,
       })

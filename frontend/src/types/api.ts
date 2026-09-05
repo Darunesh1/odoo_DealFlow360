@@ -408,6 +408,101 @@ export interface Quotation {
   approval: Approval | null
 }
 
+// --------------------------------------------------------------------------- //
+// Customer portal. A separate shape from the internal Quotation on purpose:
+// there is nowhere here to put cost, margin or the risk score.
+// --------------------------------------------------------------------------- //
+
+export interface PortalLine {
+  id: string
+  product_name: string
+  variant_name: string | null
+  quantity: number
+  unit_price: number
+  discount_percent: number
+  line_total: number
+  is_recurring: boolean
+  recurring_interval: RecurringInterval | null
+}
+
+export interface PortalComment {
+  id: string
+  quotation_line_id: string | null
+  author_name: string
+  body: string
+  created_at: string
+}
+
+export const CHANGE_REQUEST_STATUSES = [
+  "open",
+  "accepted",
+  "rejected",
+  "withdrawn",
+] as const
+export type ChangeRequestStatus = (typeof CHANGE_REQUEST_STATUSES)[number]
+
+export interface PortalChangeRequest {
+  id: string
+  requested_by_name: string
+  counter_discount_percent: number | null
+  requested_delivery_date: string | null
+  note: string | null
+  status: ChangeRequestStatus
+  created_at: string
+  resolved_at: string | null
+}
+
+export interface PortalQuotationRow {
+  id: string
+  number: string
+  status: QuotationStatus
+  currency: string
+  total: number
+  valid_until: string | null
+  updated_at: string
+}
+
+export interface PortalQuotation extends PortalQuotationRow {
+  customer_name: string
+  subtotal: number
+  discount_total: number
+  tax_total: number
+  order_discount_percent: number
+  requested_delivery_date: string | null
+  promised_delivery_date: string | null
+  notes: string | null
+  lines: PortalLine[]
+  comments: PortalComment[]
+  change_requests: PortalChangeRequest[]
+  can_negotiate: boolean
+  can_confirm: boolean
+}
+
+export interface PortalInvoiceRow {
+  id: string
+  number: string
+  status: string
+  issue_date: string
+  due_date: string
+  currency: string
+  total: number
+  amount_paid: number
+}
+
+/** The rep's side of the same conversation, which does include internal notes. */
+export interface QuotationComment extends PortalComment {
+  is_internal: boolean
+}
+
+export interface ChangeRequest extends PortalChangeRequest {
+  quotation_id: string
+}
+
+export interface Negotiation {
+  comments: QuotationComment[]
+  change_requests: ChangeRequest[]
+}
+
 export const SUBSCRIPTION_STATUSES = [
   "active",
   "paused",

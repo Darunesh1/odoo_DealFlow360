@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom"
 import {
   ArrowLeftIcon,
   CheckCircle2Icon,
+  MailIcon,
   RefreshCwIcon,
   SendIcon,
   TruckIcon,
@@ -29,6 +30,7 @@ import {
 } from "@/components/ui/table"
 import { Textarea } from "@/components/ui/textarea"
 import { LineRow } from "@/features/quotations/line-row"
+import { NegotiationPanel } from "@/features/quotations/negotiation-panel"
 import { money, statusTone } from "@/features/quotations/format"
 import { ProductPicker } from "@/features/quotations/product-picker"
 import { RiskBadge } from "@/features/quotations/risk-badge"
@@ -41,6 +43,7 @@ import {
   useSuggestions,
 } from "@/features/quotations/use-quotation"
 import { useConfirmQuotation } from "@/features/fulfillment/use-fulfillment"
+import { useSendToCustomer } from "@/features/quotations/use-quotation"
 import { QUOTATION_STAGE_LABELS } from "@/types/api"
 
 export default function QuotationDetailPage() {
@@ -50,6 +53,7 @@ export default function QuotationDetailPage() {
   const mutations = useQuotationMutations(quotationId)
   const confirm = useConfirmQuotation()
   const navigate = useNavigate()
+  const sendToCustomer = useSendToCustomer(quotationId)
 
   // A submitted quotation is read-only: nearly every column on a line is a
   // snapshot precisely so an approver sees what the rep sent, not what the
@@ -129,6 +133,16 @@ export default function QuotationDetailPage() {
                 disabled={confirm.isPending}
               >
                 <CheckCircle2Icon /> Confirm order
+              </Button>
+            ) : null}
+            {quotation.status === "approved" || quotation.status === "negotiation" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => sendToCustomer.mutate(undefined)}
+                disabled={sendToCustomer.isPending}
+              >
+                <MailIcon /> Send to customer
               </Button>
             ) : null}
             {quotation.status === "confirmed" ? (
@@ -347,6 +361,8 @@ export default function QuotationDetailPage() {
               </dl>
             </CardContent>
           </Card>
+
+          <NegotiationPanel quotationId={quotation.id} />
 
           {quotation.approval ? (
             <Card>

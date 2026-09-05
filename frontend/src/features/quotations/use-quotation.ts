@@ -243,3 +243,24 @@ export function useQuotationMutations(id: string | undefined) {
     remove,
   }
 }
+
+/** Emails the customer their portal link, creating their login if needed. */
+export function useSendToCustomer(id: string | undefined) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (recipientEmail?: string) =>
+      (
+        await api.post<Quotation>(`/quotations/${id}/send`, {
+          recipient_email: recipientEmail ?? null,
+        })
+      ).data,
+    onSuccess: (updated) => {
+      queryClient.setQueryData(quotationKeys.detail(updated.id), updated)
+      toast.success(
+        `Sent to ${updated.recipient_email ?? "the customer"} — they can review and negotiate in their portal.`
+      )
+    },
+    onError: (caught) =>
+      toast.error(errorMessage(caught, "Could not send the quotation.")),
+  })
+}

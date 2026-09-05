@@ -10,6 +10,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import { AuthProvider } from "@/features/auth/auth-context";
 import { AppLayout } from "@/layouts/app-layout";
+import { PortalLayout } from "@/layouts/portal-layout";
 import { AuthLayout } from "@/layouts/auth-layout";
 import { MarketingLayout } from "@/layouts/marketing-layout";
 import { DealFlowMark } from "@/components/brand";
@@ -37,6 +38,11 @@ const SubscriptionsPage = lazy(() => import("@/pages/app/subscriptions"));
 const BillingDetailPage = lazy(() => import("@/pages/app/billing-detail"));
 const InvoicesPage = lazy(() => import("@/pages/app/invoices"));
 const InvoiceDetailPage = lazy(() => import("@/pages/app/invoice-detail"));
+const PortalQuotationsPage = lazy(() => import("@/pages/portal/quotations"));
+const PortalQuotationDetailPage = lazy(
+  () => import("@/pages/portal/quotation-detail")
+);
+const PortalInvoicesPage = lazy(() => import("@/pages/portal/invoices"));
 const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
 const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
 const AdminProductDetailPage = lazy(
@@ -290,6 +296,26 @@ export default function App() {
                   </RequireAdmin>
                 }
               />
+            </Route>
+
+            {/* The customer portal. Its own layout and its own route tree,
+                because the spec requires a real separate restricted view
+                rather than an internal screen with a different label. */}
+            <Route
+              path="/portal"
+              element={
+                <RequireRole roles={["customer"]}>
+                  <PortalLayout />
+                </RequireRole>
+              }
+            >
+              <Route index element={<PortalQuotationsPage />} />
+              <Route
+                path="quotations/:quotationId"
+                element={<PortalQuotationDetailPage />}
+              />
+              <Route path="invoices" element={<PortalInvoicesPage />} />
+              <Route path="profile" element={<ProfilePage />} />
             </Route>
 
             <Route path="/dashboard" element={<Navigate to="/app" replace />} />

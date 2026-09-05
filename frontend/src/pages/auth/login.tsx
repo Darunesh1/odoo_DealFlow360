@@ -34,9 +34,14 @@ export default function LoginPage() {
   const onSubmit = async (values: LoginValues) => {
     setError(null)
     try {
-      await login(values.email, values.password)
+      const user = await login(values.email, values.password)
       const from = (location.state as { from?: string } | null)?.from
-      navigate(from ?? "/app", { replace: true })
+      // A customer-only login belongs in the portal; everyone else in the app.
+      const home =
+        user.roles.length > 0 && user.roles.every((role) => role === "customer")
+          ? "/portal"
+          : "/app"
+      navigate(from ?? home, { replace: true })
     } catch (caught) {
       setError(errorMessage(caught, "Could not sign you in."))
     }
