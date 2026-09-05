@@ -28,6 +28,10 @@ export function TotalsBar({ quotation }: { quotation: Quotation }) {
       <Figure
         label="Total"
         value={money(quotation.total, quotation.currency)}
+        // Without this the strip does not add up: subtotal minus discount is
+        // not the total, and the missing figure is tax. Tax itself is never
+        // typed here - it comes from each product's rate in the catalog.
+        hint={`includes ${money(quotation.tax_total, quotation.currency)} tax`}
         emphasis
       />
       <Card>
@@ -58,10 +62,12 @@ export function TotalsBar({ quotation }: { quotation: Quotation }) {
 function Figure({
   label,
   value,
+  hint,
   emphasis,
 }: {
   label: string
   value: string
+  hint?: string
   emphasis?: boolean
 }) {
   return (
@@ -76,6 +82,7 @@ function Figure({
         >
           {value}
         </p>
+        {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
       </CardContent>
     </Card>
   )

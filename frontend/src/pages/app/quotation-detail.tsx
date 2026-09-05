@@ -31,7 +31,7 @@ import {
 import { Textarea } from "@/components/ui/textarea"
 import { LineRow } from "@/features/quotations/line-row"
 import { NegotiationPanel } from "@/features/quotations/negotiation-panel"
-import { money, statusTone } from "@/features/quotations/format"
+import { statusTone } from "@/features/quotations/format"
 import { ProductPicker } from "@/features/quotations/product-picker"
 import { RiskBadge } from "@/features/quotations/risk-badge"
 import { TotalsBar } from "@/features/quotations/totals-bar"
@@ -235,6 +235,7 @@ export default function QuotationDetailPage() {
                           line={line}
                           currency={quotation.currency}
                           editable={Boolean(editable)}
+                          orderDiscount={quotation.order_discount_percent}
                           onChange={(body) =>
                             mutations.updateLine.mutate({ lineId: line.id, body })
                           }
@@ -323,8 +324,9 @@ export default function QuotationDetailPage() {
                   className="font-mono tabular-nums"
                 />
                 <p className="text-xs text-muted-foreground">
-                  Folded into every line, so it is governed by the same ceilings
-                  rather than bypassing them.
+                  Added on top of each line&apos;s own discount, then checked
+                  against the same ceilings — a header discount cannot bypass
+                  them.
                 </p>
               </div>
 
@@ -346,10 +348,6 @@ export default function QuotationDetailPage() {
 
               <dl className="space-y-1.5 border-t pt-4 text-sm">
                 <Detail label="Owner" value={quotation.owner_name ?? "—"} />
-                <Detail
-                  label="Tax"
-                  value={money(quotation.tax_total, quotation.currency)}
-                />
                 <Detail
                   label="Valid until"
                   value={

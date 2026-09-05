@@ -22,12 +22,15 @@ export function LineRow({
   line,
   currency,
   editable,
+  orderDiscount,
   onChange,
   onRemove,
 }: {
   line: QuotationLine
   currency: string
   editable: boolean
+  /** The header discount, which is added to this line's own. */
+  orderDiscount: number
   onChange: (body: { quantity?: number; line_discount_percent?: number }) => void
   onRemove: () => void
 }) {
@@ -143,6 +146,17 @@ export function LineRow({
         ) : (
           <span className="font-mono tabular-nums">{line.line_discount_percent}%</span>
         )}
+        {/* The ceiling is checked against line + order discount, not against
+            the number in the box. Without this the row reads as 2% against a
+            5% limit while quietly sitting at 6% and flagging. */}
+        {orderDiscount > 0 ? (
+          <p className="mt-1 text-right text-xs text-muted-foreground">
+            +{orderDiscount}% order ={" "}
+            <span className="font-medium text-foreground">
+              {line.discount_percent}%
+            </span>
+          </p>
+        ) : null}
       </TableCell>
 
       <TableCell className="text-right font-mono tabular-nums text-muted-foreground">
