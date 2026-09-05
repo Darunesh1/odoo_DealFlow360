@@ -1,86 +1,77 @@
-from typing import Any
+"""Read-only pickers for the rep workspace.
+
+Everything here is scoped to what a rep may actually quote: archived products
+never appear, and prices come back already resolved for the customer's tier.
+"""
+
+from typing import Any, List, Optional
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_roles
+from app.api.endpoints.catalog import serialize_stock
 from app.models.user import Role
-from app.schemas.catalog import PriceListItemRead, PriceListRead, ProductRead, StockRead
+from app.schemas.catalog import CurrencyRead, ProductRead, StockRead
 from app.schemas.customer import CustomerRead, CustomerTierRead
-from app.services.catalog_service import (
-    list_active_products,
-    list_customers,
-    list_price_lists,
-    list_stock_for_product,
+from app.services import catalog_service, pricing_service
+from app.services.catalog_service import list_active_products, list_customers
+
+router = APIRouter(
+    dependencies=[Depends(require_roles(Role.ADMIN, Role.SALES_REP, Role.SALES_MANAGER))]
 )
 
-router = APIRouter(dependencies=[Depends(require_roles(Role.ADMIN, Role.SALES_REP, Role.SALES_MANAGER))])
 
-
-def _serialize_price_list(item) -> PriceListRead:
-    return PriceListRead(
-        id=item.id,
-        name=item.name,
-        tier_id=item.tier_id,
-        currency=item.currency,
-        adjustment_percent=float(item.adjustment_percent),
-        is_active=item.is_active,
-        created_at=item.created_at,
-        updated_at=item.updated_at,
-        tier=CustomerTierRead.model_validate(item.tier) if item.tier else None,
-        items=[
-            PriceListItemRead(
-                id=price_item.id,
-                price_list_id=price_item.price_list_id,
-                product_id=price_item.product_id,
-                unit_price=float(price_item.unit_price),
-                created_at=price_item.created_at,
-                updated_at=price_item.updated_at,
-                product_name=price_item.product.name if price_item.product else "",
-                sku=price_item.product.sku if price_item.product else "",
-            )
-            for price_item in item.items
-        ],
-    )
-
-
-@router.get("/customers", response_model=list[CustomerRead])
+@router.get("/customers", response_model=List[CustomerRead])
 async def read_customers(db: AsyncSession = Depends(get_db)) -> Any:
-    return [CustomerRead.model_validate(item) for item in await list_customers(db)]
+    return list(await list_customers(db))
 
 
-@router.get("/products", response_model=list[ProductRead])
+@router.get("/customer-tiers", response_model=List[CustomerTierRead])
+async def read_customer_tiers(db: AsyncSession = Depends(get_db)) -> Any:
+    return list(await catalog_service.list_customer_tiers(db))
+
+
+@router.get("/currencies", response_model=List[CurrencyRead])
+async def read_currencies(db: AsyncSession = Depends(get_db)) -> Any:
+    return list(await pricing_service.list_currencies(db, active_only=True))
+
+
+@router.get("/products", response_model=List[ProductRead])
 async def read_products(db: AsyncSession = Depends(get_db)) -> Any:
-    return [ProductRead.model_validate(item) for item in await list_active_products(db)]
+    from app.api.endpoints.catalog import _serialize_product
 
-
-@router.get("/products/{product_id}/stock", response_model=list[StockRead])
-async def read_product_stock(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Any:
-    stock_items = await list_stock_for_product(db, product_id)
     return [
-        StockRead(
-            id=item.id,
-            warehouse_id=item.warehouse_id,
-            product_id=item.product_id,
-            quantity_on_hand=item.quantity_on_hand,
-            quantity_reserved=item.quantity_reserved,
-            reorder_point=item.reorder_point,
-            reorder_quantity=item.reorder_quantity,
-            lead_time_days=item.lead_time_days,
-            bin_location=item.bin_location,
-            created_at=item.created_at,
-            updated_at=item.updated_at,
-            quantity_available=item.quantity_available,
-            warehouse_name=item.warehouse.name if item.warehouse else "",
-            warehouse_code=item.warehouse.code if item.warehouse else "",
-            product_name=item.product.name if item.product else "",
-            sku=item.product.sku if item.product else "",
-        )
-        for item in stock_items
+        await _serialize_product(db, product)
+        for product in await list_active_products(db)
     ]
 
 
-@router.get("/price-lists", response_model=list[PriceListRead])
-async def read_price_lists(db: AsyncSession = Depends(get_db)) -> Any:
-    return [_serialize_price_list(item) for item in await list_price_lists(db)]
+@router.get("/variants/{variant_id}/stock", response_model=List[StockRead])
+async def read_variant_stock(
+    variant_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> Any:
+    items = await catalog_service.list_stock_for_variant(db, variant_id)
+    return [serialize_stock(item) for item in items]
+
+
+@router.get("/variants/{variant_id}/price")
+async def read_variant_price(
+    variant_id: uuid.UUID,
+    tier_id: uuid.UUID,
+    currency: str = Query(default="USD", min_length=3, max_length=3),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    price = await pricing_service.resolve_variant_price(
+        db, variant_id=variant_id, tier_id=tier_id, currency_code=currency
+    )
+    return {"unit_price": float(price) if price is not None else None}
+
+
+@router.get("/warehouses")
+async def read_warehouses(db: AsyncSession = Depends(get_db)) -> Any:
+    return [
+        {"id": w.id, "name": w.name, "code": w.code}
+        for w in await catalog_service.list_active_warehouses(db)
+    ]
