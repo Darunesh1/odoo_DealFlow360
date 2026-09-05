@@ -72,6 +72,9 @@ api: up ## Run the FastAPI server on :8000
 worker: up ## Run the Celery worker
 	cd $(BACKEND) && uv run celery -A app.core.celery_app worker --loglevel=info
 
+beat: up ## Run the Celery scheduler (backorders, recurring billing, deal health)
+	cd $(BACKEND) && uv run celery -A app.core.celery_app beat --loglevel=info
+
 web: ## Run the Vite dev server on :5173
 	cd $(FRONTEND) && npm run dev
 
