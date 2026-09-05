@@ -16,9 +16,8 @@ from app.models.catalog import (
     ProductVariant,
     ProductVariantAttribute,
     ProductVariantAttributeValue,
-    VariantPrice,
 )
-from app.models.inventory import StockItem
+from app.models.inventory import StockItem, Warehouse
 from app.schemas.catalog import VariantAttributeInput, VariantRowInput
 from app.services import pricing_service
 
@@ -206,12 +205,13 @@ def _options_key(options: Optional[dict]) -> tuple:
 async def save_variant_matrix(
     db: AsyncSession, product: Product, rows: Sequence[VariantRowInput]
 ) -> None:
-    """Write SKUs, per-warehouse stock and tier prices for the whole matrix.
+    """Write SKUs, costs, base prices and per-warehouse stock for the matrix,
+    then rebuild every derived price.
 
-    One transaction: a half-saved matrix would price some tiers and not others,
-    and the quotation builder would then quote whichever half landed.
+    One transaction, and validated up front: a half-configured SKU - no cost, no
+    price, or no stock figure for a warehouse - would reach the rep's picker as
+    something that cannot be quoted.
     """
-    currencies = {c.code: c for c in await pricing_service.list_currencies(db)}
     variants = {
         row.id: row
         for row in (
@@ -222,38 +222,53 @@ async def save_variant_matrix(
         .scalars()
         .all()
     }
+    warehouses = list(
+        (
+            await db.execute(
+                select(Warehouse).where(Warehouse.is_active.is_(True))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Services and subscriptions carry no stock, so they are not asked for any.
+    stocked = not product.is_subscription
+    required_warehouses = {w.id for w in warehouses} if stocked else set()
 
     for row in rows:
         variant = variants.get(row.id)
         if variant is None:
             raise ValueError("Variant does not belong to this product")
+        label = row.sku.strip() or variant.sku
+        if row.unit_cost is None or row.unit_cost <= 0:
+            raise ValueError(f"{label}: enter a unit cost before saving")
+        if row.base_price is None or row.base_price <= 0:
+            raise ValueError(f"{label}: enter a unit price before saving")
+        supplied = {entry.warehouse_id for entry in row.stock}
+        missing = required_warehouses - supplied
+        if missing:
+            names = ", ".join(
+                sorted(w.name for w in warehouses if w.id in missing)
+            )
+            raise ValueError(f"{label}: enter a quantity for {names}")
+
+    for row in rows:
+        variant = variants[row.id]
         variant.sku = row.sku.strip().upper()
         variant.unit_cost = row.unit_cost
+        variant.base_price = row.base_price
         variant.is_active = row.is_active
         db.add(variant)
-
-        for stock in row.stock:
-            await _upsert_stock(db, variant.id, stock.warehouse_id, stock.quantity_on_hand)
-
-        # One entered cell per tier fans out to every currency.
-        for price in row.prices:
-            source = currencies.get(price.currency_code.upper())
-            if source is None:
-                raise ValueError(f"Unknown currency {price.currency_code}")
-            derived = pricing_service.derive_row(
-                price.unit_price, source, currencies.values()
+        for entry in row.stock:
+            await _upsert_stock(
+                db, variant.id, entry.warehouse_id, entry.quantity_on_hand
             )
-            for code, amount in derived.items():
-                await _upsert_price(
-                    db,
-                    variant_id=variant.id,
-                    tier_id=price.tier_id,
-                    currency_code=code,
-                    unit_price=amount,
-                    is_entered=(code == source.code),
-                )
 
-    await db.commit()
+    await db.flush()
+    # Every price cell is derived, so it is rebuilt rather than written here.
+    await pricing_service.rebuild_variant_prices(
+        db, variant_ids=[row.id for row in rows]
+    )
 
 
 async def _upsert_stock(
@@ -280,40 +295,6 @@ async def _upsert_stock(
     # would abort the whole matrix save over one typo.
     item.quantity_on_hand = max(quantity, item.quantity_reserved)
     db.add(item)
-
-
-async def _upsert_price(
-    db: AsyncSession,
-    *,
-    variant_id: uuid.UUID,
-    tier_id: uuid.UUID,
-    currency_code: str,
-    unit_price: float,
-    is_entered: bool,
-) -> None:
-    row = (
-        await db.execute(
-            select(VariantPrice).where(
-                VariantPrice.variant_id == variant_id,
-                VariantPrice.tier_id == tier_id,
-                VariantPrice.currency_code == currency_code,
-            )
-        )
-    ).scalar_one_or_none()
-    if row is None:
-        db.add(
-            VariantPrice(
-                variant_id=variant_id,
-                tier_id=tier_id,
-                currency_code=currency_code,
-                unit_price=unit_price,
-                is_entered=is_entered,
-            )
-        )
-        return
-    row.unit_price = unit_price
-    row.is_entered = is_entered
-    db.add(row)
 
 
 async def count_skus(db: AsyncSession) -> int:

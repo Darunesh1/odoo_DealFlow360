@@ -1,4 +1,5 @@
 from datetime import datetime
+import enum
 from typing import Dict, List, Optional
 import uuid
 
@@ -40,9 +41,6 @@ class CurrencyUpdate(BaseModel):
     symbol: Optional[str] = Field(default=None, max_length=8)
     rate_to_base: Optional[float] = Field(default=None, gt=0)
     is_active: Optional[bool] = None
-    # When true, every FX-derived price is recomputed at the new rate. Prices
-    # the admin typed by hand (is_entered) are never touched.
-    recompute_prices: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -77,12 +75,13 @@ class CategoryLimitUpdate(BaseModel):
 # --------------------------------------------------------------------------- #
 
 class VariantPriceRead(BaseModel):
+    """A derived cell. Nothing here is typed, so there is nothing to write back."""
+
     model_config = ConfigDict(from_attributes=True)
 
     tier_id: uuid.UUID
     currency_code: str
     unit_price: float
-    is_entered: bool
 
 
 class VariantAttributeValueRead(BaseModel):
@@ -119,6 +118,7 @@ class ProductVariantRead(BaseModel):
     name: str
     options: Dict[str, str] = Field(default_factory=dict)
     unit_cost: float = 0
+    base_price: float = 0
     is_default: bool = False
     is_active: bool = True
     prices: List[VariantPriceRead] = Field(default_factory=list)
@@ -132,26 +132,25 @@ class VariantAttributeInput(BaseModel):
     values: List[str] = Field(min_length=1)
 
 
-class VariantPriceInput(BaseModel):
-    tier_id: uuid.UUID
-    currency_code: str = Field(min_length=3, max_length=3)
-    unit_price: float = Field(ge=0)
-
-
 class VariantStockInput(BaseModel):
     warehouse_id: uuid.UUID
     quantity_on_hand: int = Field(ge=0)
 
 
 class VariantRowInput(BaseModel):
-    """One row of the generated-variants table."""
+    """One row of the generated-variants table.
+
+    Two amounts, both in the base currency; every tier and currency price is
+    derived from base_price. Both are required, and so is a quantity for each
+    active warehouse on a stocked product - the service rejects the batch and
+    names the SKU otherwise.
+    """
 
     id: uuid.UUID
     sku: str = Field(min_length=1, max_length=64)
-    unit_cost: float = Field(default=0, ge=0)
+    unit_cost: float = Field(gt=0)
+    base_price: float = Field(gt=0)
     is_active: bool = True
-    # Only the cells the admin typed. The server fills the other currencies.
-    prices: List[VariantPriceInput] = Field(default_factory=list)
     stock: List[VariantStockInput] = Field(default_factory=list)
 
 
@@ -187,6 +186,20 @@ class ProductRead(ProductBase):
     updated_at: datetime
     attributes: List[VariantAttributeRead] = Field(default_factory=list)
     variants: List[ProductVariantRead] = Field(default_factory=list)
+
+
+class ProductSort(str, enum.Enum):
+    NAME = "name"
+    CATEGORY = "category"
+    VARIANTS = "variants"
+    PRICE = "price"
+    TAX = "tax"
+    STATUS = "status"
+
+
+class SortOrder(str, enum.Enum):
+    ASC = "asc"
+    DESC = "desc"
 
 
 class ProductListRow(BaseModel):
@@ -273,10 +286,6 @@ class WarehouseBase(BaseModel):
     code: str
     name: str
     address: Optional[str] = None
-    shipping_base_cost: float = 0
-    shipping_cost_per_unit: float = 0
-    shipping_cost_weight: float = 1
-    split_priority: int = 100
     is_active: bool = True
 
 
@@ -290,10 +299,6 @@ class WarehouseCreate(BaseModel):
     code: str = Field(min_length=1, max_length=16)
     name: str = Field(min_length=1, max_length=255)
     address: Optional[str] = None
-    shipping_base_cost: float = 0
-    shipping_cost_per_unit: float = 0
-    shipping_cost_weight: float = 1
-    split_priority: int = 100
     is_active: bool = True
 
 
@@ -301,10 +306,6 @@ class WarehouseUpdate(BaseModel):
     code: Optional[str] = Field(default=None, min_length=1, max_length=16)
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     address: Optional[str] = None
-    shipping_base_cost: Optional[float] = None
-    shipping_cost_per_unit: Optional[float] = None
-    shipping_cost_weight: Optional[float] = None
-    split_priority: Optional[int] = None
     is_active: Optional[bool] = None
 
 

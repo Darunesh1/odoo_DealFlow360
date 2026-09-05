@@ -10,16 +10,15 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.base import MONEY, RATIO, TimestampMixin
+from app.models.base import TimestampMixin
 
 
 class Warehouse(Base, TimestampMixin):
-    """A stocking location.
+    """A stocking location: where it is, and what it holds.
 
-    The three cost columns are what make the split algorithm configuration
-    rather than code: estimated cost is base + per_unit * units, scaled by
-    shipping_cost_weight, and the planner minimises that sum with a penalty per
-    extra warehouse touched - which is what "minimise shipments" means.
+    Carries no shipping cost configuration. The split planner therefore
+    minimises the NUMBER of shipments and prefers the warehouse with deeper
+    stock, rather than a monetary cost.
     """
 
     __tablename__ = "warehouses"
@@ -30,11 +29,6 @@ class Warehouse(Base, TimestampMixin):
     code: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    shipping_base_cost: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
-    shipping_cost_per_unit: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
-    shipping_cost_weight: Mapped[float] = mapped_column(RATIO, default=1, nullable=False)
-    # Tie-break so the planner is deterministic when costs are equal.
-    split_priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     stock: Mapped[list["StockItem"]] = relationship(

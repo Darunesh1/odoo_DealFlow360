@@ -74,6 +74,9 @@ async def create_currency(db: AsyncSession, obj_in: CurrencyCreate) -> Currency:
     db.add(currency)
     await db.commit()
     await db.refresh(currency)
+    # A new currency has no price rows yet; give it the full column.
+    await pricing_service.rebuild_variant_prices(db)
+    await db.refresh(currency)
     return currency
 
 
@@ -81,16 +84,18 @@ async def update_currency(
     db: AsyncSession, db_obj: Currency, obj_in: CurrencyUpdate
 ) -> Currency:
     data = obj_in.model_dump(exclude_unset=True)
-    recompute = data.pop("recompute_prices", False)
     if db_obj.is_base and "rate_to_base" in data and float(data["rate_to_base"]) != 1:
         raise ValueError("The base currency rate is always 1")
+    rate_changed = "rate_to_base" in data
     for field, value in data.items():
         setattr(db_obj, field, value)
     db.add(db_obj)
     await db.commit()
     await db.refresh(db_obj)
-    if recompute:
-        await pricing_service.recompute_derived_prices(db, db_obj)
+    if rate_changed:
+        # Every price in this currency is derived from the rate, so the rate
+        # moving means the prices move with it.
+        await pricing_service.rebuild_variant_prices(db)
         await db.refresh(db_obj)
     return db_obj
 
@@ -118,6 +123,7 @@ async def delete_currency(db: AsyncSession, db_obj: Currency) -> None:
         raise InUseError(f"{quoted} quotation(s) still use {db_obj.code}")
     await db.delete(db_obj)
     await db.commit()
+    await pricing_service.rebuild_variant_prices(db)
 
 
 # --------------------------------------------------------------------------- #
@@ -154,17 +160,27 @@ async def create_customer_tier(
     db.add(tier)
     await db.commit()
     await db.refresh(tier)
+    # A tier is a column of the price matrix; it arrives already priced.
+    await pricing_service.rebuild_variant_prices(db)
+    await db.refresh(tier)
     return tier
 
 
 async def update_customer_tier(
     db: AsyncSession, db_obj: CustomerTier, obj_in: CustomerTierUpdate
 ) -> CustomerTier:
-    for field, value in obj_in.model_dump(exclude_unset=True).items():
+    data = obj_in.model_dump(exclude_unset=True)
+    ceiling_changed = "max_discount_percent" in data
+    for field, value in data.items():
         setattr(db_obj, field, value)
     db.add(db_obj)
     await db.commit()
     await db.refresh(db_obj)
+    if ceiling_changed:
+        # The tier's percentage IS the discount baked into its prices, so
+        # raising the ceiling reprices that tier's whole column.
+        await pricing_service.rebuild_variant_prices(db)
+        await db.refresh(db_obj)
     return db_obj
 
 
@@ -197,6 +213,7 @@ async def delete_customer_tier(db: AsyncSession, db_obj: CustomerTier) -> None:
         )
     await db.delete(db_obj)
     await db.commit()
+    await pricing_service.rebuild_variant_prices(db)
 
 
 # --------------------------------------------------------------------------- #
@@ -392,7 +409,7 @@ async def get_warehouse_by_code(db: AsyncSession, code: str) -> Optional[Warehou
 
 async def list_warehouses(db: AsyncSession) -> Sequence[Warehouse]:
     result = await db.execute(
-        select(Warehouse).order_by(Warehouse.split_priority, Warehouse.name)
+        select(Warehouse).order_by(Warehouse.name)
     )
     return result.scalars().all()
 
@@ -401,7 +418,7 @@ async def list_active_warehouses(db: AsyncSession) -> Sequence[Warehouse]:
     result = await db.execute(
         select(Warehouse)
         .where(Warehouse.is_active.is_(True))
-        .order_by(Warehouse.split_priority, Warehouse.name)
+        .order_by(Warehouse.name)
     )
     return result.scalars().all()
 

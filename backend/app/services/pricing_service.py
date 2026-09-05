@@ -58,16 +58,85 @@ def convert(amount, source: Currency, target: Currency) -> Decimal:
     return in_base / _dec(target.rate_to_base)
 
 
-def derive_row(
-    entered_amount,
-    entered_currency: Currency,
-    currencies: Iterable[Currency],
-) -> dict[str, float]:
-    """Fill every currency for one tier from the single cell the admin typed."""
-    return {
-        currency.code: quantize_unit(convert(entered_amount, entered_currency, currency))
-        for currency in currencies
+async def rebuild_variant_prices(db: AsyncSession, *, variant_ids=None) -> int:
+    """Recompute every (variant, tier, currency) price from base_price.
+
+        unit_price = convert(base_price, base -> currency)
+                     x (1 - tier.max_discount_percent / 100)
+
+    The ONLY place a variant_prices row is written. Nothing in that table is
+    typed, so anything that feeds the formula - a variant's price, a tier's
+    ceiling, a currency's rate, a tier or currency appearing or disappearing -
+    means calling this rather than patching rows in place.
+    """
+    from app.models.customer import CustomerTier
+
+    currencies = list(await list_currencies(db))
+    base = next((c for c in currencies if c.is_base), None)
+    if base is None or not currencies:
+        return 0
+    tiers = list(
+        (await db.execute(select(CustomerTier))).scalars().all()
+    )
+    if not tiers:
+        return 0
+
+    stmt = select(ProductVariant)
+    if variant_ids is not None:
+        ids = list(variant_ids)
+        if not ids:
+            return 0
+        stmt = stmt.where(ProductVariant.id.in_(ids))
+    variants = list((await db.execute(stmt)).scalars().all())
+    if not variants:
+        return 0
+
+    existing = {
+        (row.variant_id, row.tier_id, row.currency_code): row
+        for row in (
+            await db.execute(
+                select(VariantPrice).where(
+                    VariantPrice.variant_id.in_([v.id for v in variants])
+                )
+            )
+        )
+        .scalars()
+        .all()
     }
+
+    written = 0
+    for variant in variants:
+        for tier in tiers:
+            keep = _dec(1) - _dec(tier.max_discount_percent) / _dec(100)
+            for currency in currencies:
+                amount = quantize_unit(
+                    convert(variant.base_price, base, currency) * keep
+                )
+                row = existing.get((variant.id, tier.id, currency.code))
+                if row is None:
+                    db.add(
+                        VariantPrice(
+                            variant_id=variant.id,
+                            tier_id=tier.id,
+                            currency_code=currency.code,
+                            unit_price=amount,
+                        )
+                    )
+                else:
+                    row.unit_price = amount
+                    db.add(row)
+                written += 1
+
+    # Tiers and currencies can also disappear; drop rows that no longer point at
+    # a live one, or the matrix would keep showing a deleted tier's column.
+    live_tiers = {tier.id for tier in tiers}
+    live_currencies = {currency.code for currency in currencies}
+    for (variant_id, tier_id, code), row in existing.items():
+        if tier_id not in live_tiers or code not in live_currencies:
+            await db.delete(row)
+
+    await db.commit()
+    return written
 
 
 async def resolve_variant_price(
@@ -92,47 +161,6 @@ async def resolve_variant_price(
         )
     ).scalar_one_or_none()
     return None if row is None else _dec(row)
-
-
-async def recompute_derived_prices(db: AsyncSession, currency: Currency) -> int:
-    """Re-derive every non-entered price in `currency` after a rate change.
-
-    Cells the admin typed by hand are left exactly as typed - a rate correction
-    is not licence to rewrite someone's deliberate number.
-    """
-    currencies = {c.code: c for c in await list_currencies(db)}
-    rows = list(
-        (
-            await db.execute(
-                select(VariantPrice).where(
-                    VariantPrice.currency_code == currency.code,
-                    VariantPrice.is_entered.is_(False),
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    updated = 0
-    for row in rows:
-        source = (
-            await db.execute(
-                select(VariantPrice).where(
-                    VariantPrice.variant_id == row.variant_id,
-                    VariantPrice.tier_id == row.tier_id,
-                    VariantPrice.is_entered.is_(True),
-                )
-            )
-        ).scalar_one_or_none()
-        if source is None or source.currency_code not in currencies:
-            continue
-        row.unit_price = quantize_unit(
-            convert(source.unit_price, currencies[source.currency_code], currency)
-        )
-        db.add(row)
-        updated += 1
-    await db.commit()
-    return updated
 
 
 async def variant_price_range(

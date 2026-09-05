@@ -239,7 +239,11 @@ class ProductVariant(Base, TimestampMixin):
     sku: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     options: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    # The two numbers an admin actually types, both in the base currency.
+    # Every tier and currency price is derived from base_price; unit_cost is
+    # what makes margin computable.
     unit_cost: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
+    base_price: Mapped[float] = mapped_column(UNIT_PRICE, default=0, nullable=False)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -250,17 +254,20 @@ class ProductVariant(Base, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("product_id", "name", name="uq_product_variant_name"),
-        CheckConstraint("unit_cost >= 0", name="ck_variant_cost_non_negative"),
+        CheckConstraint(
+            "unit_cost >= 0 AND base_price >= 0", name="ck_variant_amounts_non_negative"
+        ),
     )
 
 
 class VariantPrice(Base, TimestampMixin):
     """The price of one variant, for one customer tier, in one currency.
 
-    The admin types one currency per tier and the server computes and stores the
-    rest from the FX rate, marking the typed cell with is_entered. Storing
-    rather than converting on read means a later rate change cannot silently
-    move a price a customer was already quoted.
+    Entirely derived: base_price converted into the currency, less that tier's
+    discount. Nothing here is typed. It is still stored rather than computed on
+    read because that keeps price resolution a single indexed lookup, and means
+    a later rate change cannot silently move a price already quoted -
+    repricing is an explicit rebuild.
     """
 
     __tablename__ = "variant_prices"
@@ -280,8 +287,6 @@ class VariantPrice(Base, TimestampMixin):
         String(3), ForeignKey("currencies.code", ondelete="RESTRICT"), nullable=False
     )
     unit_price: Mapped[float] = mapped_column(UNIT_PRICE, default=0, nullable=False)
-    # True on the cell the admin actually typed; the others are FX-derived.
-    is_entered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     variant: Mapped["ProductVariant"] = relationship(back_populates="prices")
 
