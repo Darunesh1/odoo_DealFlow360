@@ -121,6 +121,15 @@ class FulfillmentAllocation(Base, TimestampMixin):
     )
     # Denormalised off the line so the reservation write is a single-table
     # lookup rather than a join through quotation_lines.
+    #
+    # The VARIANT is what stock is keyed on - stock_items has no product_id -
+    # so the variant is what a reservation has to name. product_id rides along
+    # for reporting rollups, where "how many laptops did we ship" should not
+    # need a join through every SKU.
+    variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="RESTRICT"),
+        index=True, nullable=False,
+    )
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
@@ -146,7 +155,7 @@ class FulfillmentAllocation(Base, TimestampMixin):
         ),
         # Makes the "Consolidate Remaining Backorder" sweep cheap.
         Index(
-            "ix_allocation_backorder_sweep", "warehouse_id", "product_id",
+            "ix_allocation_backorder_sweep", "warehouse_id", "variant_id",
             postgresql_where=text("status = 'backordered'"),
         ),
     )
@@ -228,6 +237,10 @@ class ShipmentLine(Base, TimestampMixin):
     quotation_line_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("quotation_lines.id", ondelete="CASCADE"),
         index=True, nullable=False,
+    )
+    variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="RESTRICT"),
+        nullable=False,
     )
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False

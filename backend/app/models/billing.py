@@ -107,6 +107,13 @@ class Subscription(Base, TimestampMixin):
     product_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False
     )
+    # Nullable only for the theoretical plan with no variant; in practice every
+    # product owns at least one, so this is always populated. It carries the SKU
+    # and the tier price the plan was actually sold at.
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     plan_name: Mapped[str] = mapped_column(String(255), nullable=False)
     interval: Mapped[RecurringInterval] = mapped_column(
         SAEnum(RecurringInterval, name="recurring_interval",
@@ -311,6 +318,12 @@ class InvoiceLine(Base, TimestampMixin):
     description: Mapped[str] = mapped_column(String(255), nullable=False)
     product_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="SET NULL"), nullable=True
+    )
+    # Null on the lines that have no SKU behind them - shipping, proration
+    # charges and credits.
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"),
+        nullable=True,
     )
     quotation_line_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("quotation_lines.id", ondelete="SET NULL"),
