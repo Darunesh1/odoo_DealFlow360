@@ -19,6 +19,7 @@ from app.services import (
     audit_service,
     fulfillment_service,
     invoice_service,
+    negotiation_service,
     order_service,
     payment_service,
     subscription_service,

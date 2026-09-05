@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination, get_current_user, get_db, get_pagination, require_roles
-from app.models.quotation import QuotationStatus
+from app.models.quotation import QuotationChangeRequest, QuotationStatus
 from app.models.user import Role, User
 from app.schemas.catalog import SortOrder
 from app.schemas.quotation import (
@@ -22,8 +22,16 @@ from app.schemas.quotation import (
     QuotationSubmitResponse,
     QuotationUpdate,
 )
-from app.schemas.quotation import UpsellSuggestion
-from app.services import upsell_service
+from app.schemas.quotation import (
+    ChangeRequestDecision,
+    ChangeRequestRead,
+    CommentCreate,
+    CommentRead,
+    NegotiationRead,
+    SendQuotationInput,
+    UpsellSuggestion,
+)
+from app.services import negotiation_service, upsell_service
 from app.services.catalog_service import get_customer_by_id
 from app.services.quotation_service import (
     add_line,
@@ -305,3 +313,163 @@ async def dismiss_suggestion(
 ) -> None:
     """Hides one suggestion on this quotation for a day."""
     await upsell_service.dismiss(quotation_id, product_id)
+
+
+# --------------------------------------------------------------------------- #
+# Negotiation, from the rep's side (spec B8)
+# --------------------------------------------------------------------------- #
+
+
+@router.get("/quotations/{quotation_id}/negotiation", response_model=NegotiationRead)
+async def read_negotiation(
+    quotation_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+) -> Any:
+    """Comments and counter-offers. Internal notes included - this is the
+    internal side of the conversation."""
+    await ensure_quotation_loaded(db, quotation_id)
+    return NegotiationRead(
+        comments=[
+            CommentRead.model_validate(comment)
+            for comment in await negotiation_service.comments_for(
+                db, quotation_id, include_internal=True
+            )
+        ],
+        change_requests=[
+            ChangeRequestRead.model_validate(request)
+            for request in await negotiation_service.change_requests_for(
+                db, quotation_id
+            )
+        ],
+    )
+
+
+@router.post(
+    "/quotations/{quotation_id}/comments",
+    response_model=NegotiationRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_quotation_comment(
+    quotation_id: uuid.UUID,
+    body: CommentCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    quotation = await ensure_quotation_loaded(db, quotation_id)
+    try:
+        await negotiation_service.add_comment(
+            db,
+            quotation=quotation,
+            author=current_user,
+            body=body.body,
+            line_id=body.quotation_line_id,
+            is_internal=body.is_internal,
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+    await db.commit()
+    return await read_negotiation(quotation_id, db=db)
+
+
+@router.post(
+    "/quotations/{quotation_id}/change-requests/{request_id}/accept",
+    response_model=QuotationSubmitResponse,
+)
+async def accept_change_request(
+    quotation_id: uuid.UUID,
+    request_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Accepts a counter-offer, which re-runs the governance on the new terms.
+
+    If the new discount exceeds a ceiling the quotation re-enters approval
+    automatically; if it does not, it auto-approves and goes on to fulfillment.
+    Same code path either way.
+    """
+    quotation = await ensure_quotation_loaded(db, quotation_id)
+    request = await db.get(QuotationChangeRequest, request_id)
+    if request is None or request.quotation_id != quotation_id:
+        raise _not_found("Change request not found")
+
+    try:
+        updated, approval = await negotiation_service.accept_change_request(
+            db, quotation=quotation, request=request, user=current_user
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+
+    from app.services.approval_notifications import notify_submitted
+
+    await notify_submitted(db, approval=approval, quotation=updated)
+
+    return QuotationSubmitResponse(
+        quotation=QuotationRead.model_validate(updated),
+        approval_required=updated.requires_approval,
+        approval=updated.approval,
+    )
+
+
+@router.post(
+    "/quotations/{quotation_id}/change-requests/{request_id}/reject",
+    response_model=NegotiationRead,
+)
+async def reject_change_request(
+    quotation_id: uuid.UUID,
+    request_id: uuid.UUID,
+    body: ChangeRequestDecision,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    quotation = await ensure_quotation_loaded(db, quotation_id)
+    request = await db.get(QuotationChangeRequest, request_id)
+    if request is None or request.quotation_id != quotation_id:
+        raise _not_found("Change request not found")
+
+    try:
+        await negotiation_service.reject_change_request(
+            db, quotation=quotation, request=request, user=current_user, note=body.note
+        )
+    except ValueError as exc:
+        raise _bad_request(exc)
+    return await read_negotiation(quotation_id, db=db)
+
+
+@router.post("/quotations/{quotation_id}/send", response_model=QuotationRead)
+async def send_to_customer(
+    quotation_id: uuid.UUID,
+    body: SendQuotationInput,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Emails the customer their portal link.
+
+    Creates or upgrades their portal login on the way, so a customer who has
+    never signed in still receives something they can act on.
+    """
+    quotation = await ensure_quotation_loaded(db, quotation_id)
+    customer = await get_customer_by_id(db, quotation.customer_id)
+    if not customer:
+        raise _not_found("Customer not found")
+
+    recipient = (
+        body.recipient_email or quotation.recipient_email or customer.contact_email
+    )
+    if not recipient:
+        raise _bad_request(ValueError("No address to send this to"))
+
+    if quotation.recipient_email != recipient:
+        quotation.recipient_email = recipient
+        db.add(quotation)
+        await db.commit()
+
+    await sync_customer_portal_email(
+        db,
+        customer=customer,
+        recipient_email=recipient,
+        quotation_number=quotation.number,
+    )
+
+    from app.services.portal_notifications import notify_quotation_sent
+
+    quotation = await ensure_quotation_loaded(db, quotation_id)
+    await notify_quotation_sent(db, quotation=quotation, recipient=recipient)
+    return QuotationRead.model_validate(quotation)

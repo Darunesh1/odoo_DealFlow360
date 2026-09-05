@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.catalog import ProductUnit, RecurringInterval
 from app.models.approval import ApprovalStatus, ApprovalTrigger
-from app.models.quotation import LineSource, QuotationStatus, RiskBand
+from app.models.quotation import ChangeRequestStatus, LineSource, QuotationStatus, RiskBand
 from app.schemas.approval import ApprovalRead
 from app.schemas.common import Page
 from app.schemas.customer import CustomerRead, CustomerTierRead
@@ -210,3 +210,57 @@ class QuotationSubmitResponse(BaseModel):
     quotation: QuotationRead
     approval_required: bool
     approval: Optional[ApprovalRead] = None
+
+
+# --------------------------------------------------------------------------- #
+# Negotiation, seen from the rep's side
+# --------------------------------------------------------------------------- #
+
+
+class ChangeRequestRead(BaseModel):
+    """A customer counter-offer as the rep sees it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    quotation_id: uuid.UUID
+    requested_by_name: str
+    counter_discount_percent: Optional[float] = None
+    requested_delivery_date: Optional[date] = None
+    note: Optional[str] = None
+    status: ChangeRequestStatus
+    created_at: datetime
+    resolved_at: Optional[datetime] = None
+
+
+class CommentRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    quotation_line_id: Optional[uuid.UUID] = None
+    author_name: str
+    body: str
+    is_internal: bool
+    created_at: datetime
+
+
+class CommentCreate(BaseModel):
+    quotation_line_id: Optional[uuid.UUID] = None
+    body: str = Field(min_length=1, max_length=2000)
+    # A rep may leave a note the customer never sees.
+    is_internal: bool = False
+
+
+class ChangeRequestDecision(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class SendQuotationInput(BaseModel):
+    recipient_email: Optional[EmailStr] = None
+
+
+class NegotiationRead(BaseModel):
+    """Everything the rep needs to answer a customer, in one response."""
+
+    comments: List[CommentRead] = Field(default_factory=list)
+    change_requests: List[ChangeRequestRead] = Field(default_factory=list)

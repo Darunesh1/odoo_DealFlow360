@@ -304,3 +304,58 @@ def send_approval_decision_email(
         accent=accents.get(outcome, "#4F46E5"),
     )
     return send_email(email, f"{quotation_number}: {outcome.replace('_', ' ')}", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_quotation_link_email")
+def send_quotation_link_email(
+    email: str,
+    customer_name: str = "",
+    quotation_number: str = "",
+    quotation_id: str = "",
+    total: float = 0.0,
+    currency: str = "USD",
+) -> str:
+    """Sends a customer the link to review and negotiate their quotation."""
+    link = f"{settings.FRONTEND_URL}/portal/quotations/{quotation_id}"
+    html = render_email(
+        heading="Your quotation is ready",
+        body_html=(
+            f"<p>Hello {customer_name or 'there'},</p>"
+            f"<p>Quotation <strong>{quotation_number}</strong> is ready for you to "
+            f"review, at <strong>{currency} {total:,.2f}</strong>.</p>"
+            "<p>You can ask questions on individual lines, propose a different "
+            "discount, or confirm the terms — all from your portal, without a "
+            "single email back and forth.</p>"
+        ),
+        button_label="Review your quotation",
+        button_url=link,
+        accent="#0F766E",
+    )
+    return send_email(email, f"Your quotation {quotation_number}", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_change_request_email")
+def send_change_request_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    customer_name: str = "",
+    quotation_id: str = "",
+) -> str:
+    """Tells a rep their customer has asked for different terms."""
+    html = render_email(
+        heading="Your customer has proposed different terms",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{customer_name}</strong> has requested changes to "
+            f"<strong>{quotation_number}</strong>.</p>"
+            "<p>Accepting re-runs the discount governance on the new terms, so "
+            "it may need approval again.</p>"
+        ),
+        button_label="Open the quotation",
+        button_url=f"{settings.FRONTEND_URL}/app/quotations/{quotation_id}",
+        accent="#B45309",
+    )
+    return send_email(
+        email, f"{customer_name} countered on {quotation_number}", html
+    )
