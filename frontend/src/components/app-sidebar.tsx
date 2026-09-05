@@ -1,9 +1,14 @@
 import {
   BookOpenIcon,
+  CheckCircle2Icon,
+  FileTextIcon,
+  LayersIcon,
   LayoutDashboardIcon,
-  SettingsIcon,
+  PackageIcon,
+  RepeatIcon,
+  ReceiptTextIcon,
   ShieldCheckIcon,
-  UserRoundIcon,
+  TrendingUpIcon,
   UsersIcon,
 } from "lucide-react"
 import type { ComponentType } from "react"
@@ -37,8 +42,14 @@ interface NavItem {
 
 const PLATFORM: NavItem[] = [
   { title: "Dashboard", url: "/app", icon: LayoutDashboardIcon },
-  { title: "Profile", url: "/app/profile", icon: UserRoundIcon },
-  { title: "Settings", url: "/app/settings", icon: SettingsIcon },
+  { title: "Quotations", url: "/app/quotations", icon: FileTextIcon, nested: true },
+  { title: "Approvals", url: "/app/approvals", icon: CheckCircle2Icon, nested: true },
+  { title: "Fulfillment", url: "/app/fulfillment", icon: LayersIcon, nested: true },
+  { title: "Subscriptions", url: "/app/subscriptions", icon: RepeatIcon, nested: true },
+  { title: "Invoices", url: "/app/invoices", icon: ReceiptTextIcon, nested: true },
+  { title: "Deal Health", url: "/app/health", icon: TrendingUpIcon, nested: true },
+  { title: "Reports", url: "/app/reports", icon: BookOpenIcon, nested: true },
+  { title: "Products", url: "/app/products", icon: PackageIcon, nested: true },
 ]
 
 const ADMINISTRATION: NavItem[] = [
@@ -79,7 +90,7 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {renderGroup("Platform", PLATFORM)}
+        {renderGroup("Sales Operations", PLATFORM)}
         {isAdmin && renderGroup("Administration", ADMINISTRATION)}
 
         <SidebarGroup className="mt-auto">
