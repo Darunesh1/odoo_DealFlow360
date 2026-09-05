@@ -1,0 +1,146 @@
+from typing import Optional, Sequence
+import uuid
+from pydantic import BaseModel
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.security import hash_password
+from app.models.user import User
+from app.schemas.user import UserCreate
+
+
+def normalize_email(email: str) -> str:
+    """Normalizes an email address for storage and lookup."""
+    return email.lower().strip()
+
+
+async def get_user_by_email(db: AsyncSession, email: str) -> Optional[User]:
+    """Retrieves a user from the database by email address."""
+    query = select(User).where(User.email == normalize_email(email))
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> Optional[User]:
+    """Retrieves a user from the database by their unique UUID."""
+    query = select(User).where(User.id == user_id)
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
+
+
+async def create_user(db: AsyncSession, obj_in: UserCreate) -> User:
+    """Hashes the password and creates a new User record in the database."""
+    db_user = User(
+        email=normalize_email(obj_in.email),
+        hashed_password=hash_password(obj_in.password),
+        full_name=obj_in.full_name,
+        is_active=True,
+        is_superuser=False,
+        is_verified=False,
+    )
+    db.add(db_user)
+    await db.commit()
+    await db.refresh(db_user)
+    return db_user
+
+
+async def update_user(db: AsyncSession, db_obj: User, obj_in: BaseModel) -> User:
+    """Applies the set fields of an update schema to a user record.
+
+    The caller decides which schema to pass, and therefore which fields may be
+    written: UserUpdateMe for self service, UserUpdateAdmin for admin routes.
+    """
+    update_data = obj_in.model_dump(exclude_unset=True)
+
+    password = update_data.pop("password", None)
+    if password:
+        db_obj.hashed_password = hash_password(password)
+
+    email = update_data.pop("email", None)
+    if email:
+        db_obj.email = normalize_email(email)
+
+    for field, value in update_data.items():
+        setattr(db_obj, field, value)
+
+    db.add(db_obj)
+    await db.commit()
+    await db.refresh(db_obj)
+    return db_obj
+
+
+async def set_password(db: AsyncSession, db_obj: User, new_password: str) -> User:
+    """Replaces a user's password hash."""
+    db_obj.hashed_password = hash_password(new_password)
+    db.add(db_obj)
+    await db.commit()
+    await db.refresh(db_obj)
+    return db_obj
+
+
+async def set_verification_status(
+    db: AsyncSession, db_obj: User, is_verified: bool
+) -> User:
+    """Sets a user's email verification flag."""
+    db_obj.is_verified = is_verified
+    db.add(db_obj)
+    await db.commit()
+    await db.refresh(db_obj)
+    return db_obj
+
+
+async def verify_user_email(db: AsyncSession, db_obj: User) -> User:
+    """Marks a user as verified in the database."""
+    return await set_verification_status(db, db_obj, True)
+
+
+async def delete_user(db: AsyncSession, db_obj: User) -> None:
+    """Permanently removes a user record."""
+    await db.delete(db_obj)
+    await db.commit()
+
+
+def _list_filters(search: Optional[str], is_active: Optional[bool]) -> list:
+    """Builds the shared WHERE clauses used by list_users and count_users."""
+    filters = []
+    if search:
+        pattern = f"%{search.strip().lower()}%"
+        filters.append(
+            or_(
+                func.lower(User.email).like(pattern),
+                func.lower(func.coalesce(User.full_name, "")).like(pattern),
+            )
+        )
+    if is_active is not None:
+        filters.append(User.is_active == is_active)
+    return filters
+
+
+async def list_users(
+    db: AsyncSession,
+    skip: int = 0,
+    limit: int = 20,
+    search: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> Sequence[User]:
+    """Returns a page of users, newest first, optionally filtered."""
+    query = (
+        select(User)
+        .where(*_list_filters(search, is_active))
+        .order_by(User.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    result = await db.execute(query)
+    return result.scalars().all()
+
+
+async def count_users(
+    db: AsyncSession,
+    search: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> int:
+    """Counts users matching the same filters as list_users."""
+    query = select(func.count()).select_from(User).where(*_list_filters(search, is_active))
+    result = await db.execute(query)
+    return result.scalar_one()

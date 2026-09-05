@@ -1,0 +1,92 @@
+# Full containerised stack: infrastructure plus the application itself.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Day to day development uses docker-compose.yml (infrastructure only) with the
+# app running natively. This file is for deployment and for verifying the image.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: ${PROJECT_NAME:-template}_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-backend_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-backend_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${PROJECT_NAME:-template}_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${PROJECT_NAME:-template}_web
+    restart: always
+    ports:
+      - "8000:8000"
+    environment: &app_environment
+      # Inside the compose network the services are reachable by service name,
+      # overriding the localhost defaults used when running natively.
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      POSTGRES_SERVER: db
+      REDIS_HOST: redis
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-backend_db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+      JWT_SECRET_KEY: "${JWT_SECRET_KEY:?must be set - generate one with openssl rand -hex 32}"
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-15}
+      REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-7}
+      EMAIL_VERIFICATION_EXPIRE_HOURS: ${EMAIL_VERIFICATION_EXPIRE_HOURS:-24}
+      PASSWORD_RESET_EXPIRE_MINUTES: ${PASSWORD_RESET_EXPIRE_MINUTES:-30}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      EMAILS_FROM_EMAIL: ${EMAILS_FROM_EMAIL:-no-reply@yourdomain.com}
+      EMAILS_FROM_NAME: ${EMAILS_FROM_NAME:-FastAPI Template}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ${PROJECT_NAME:-template}_celery_worker
+    restart: always
+    command: celery -A app.core.celery_app worker --loglevel=info
+    environment: *app_environment
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:

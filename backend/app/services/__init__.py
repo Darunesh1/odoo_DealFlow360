@@ -1,0 +1,27 @@
+from app.services.user_service import (
+    count_users,
+    create_user,
+    delete_user,
+    get_user_by_email,
+    get_user_by_id,
+    list_users,
+    normalize_email,
+    set_password,
+    set_verification_status,
+    update_user,
+    verify_user_email,
+)
+
+__all__ = [
+    "count_users",
+    "create_user",
+    "delete_user",
+    "get_user_by_email",
+    "get_user_by_id",
+    "list_users",
+    "normalize_email",
+    "set_password",
+    "set_verification_status",
+    "update_user",
+    "verify_user_email",
+]
