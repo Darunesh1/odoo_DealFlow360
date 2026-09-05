@@ -179,11 +179,28 @@ place — `product_variants` — and pricing, stock and quotation-line code has 
 on that payload. Regenerating after the admin adds a value inserts only the new combinations, so
 SKUs, quantities and prices already typed into the matrix survive.
 
-**Prices are stored per currency, not converted on read.** `variant_prices` holds one row per
-`(variant, tier, currency)`. The admin types one currency per tier; `pricing_service` fans the rest
-out from `currencies.rate_to_base` and flags the typed cell with `is_entered`. Changing a rate
-re-derives only the non-entered cells — a rate correction must never rewrite a price someone typed,
-nor silently move a price a customer was already quoted.
+**Two numbers are typed; every price is calculated.** A variant carries `unit_cost` and
+`base_price`, both in the base currency. `variant_prices` then holds one derived row per
+`(variant, tier, currency)`:
+
+```
+unit_price = convert(base_price, base -> currency) x (1 - tier.max_discount_percent / 100)
+```
+
+`pricing_service.rebuild_variant_prices()` is the **only** place a `variant_prices` row is written.
+Call it after anything that feeds the formula: a variant's cost or price saved (that product's
+variants), a tier ceiling changed or a tier added or deleted (all), a currency rate changed or a
+currency added or deleted (all). Prices are stored rather than converted on read so resolution stays
+one indexed lookup and repricing is always an explicit, visible rebuild.
+
+A consequence worth knowing: **a tier's percentage does two jobs** — it is the standing discount
+baked into that tier's prices *and* the ceiling a rep may discount further before a line flags. The
+two stay coherent because `recalculate_quotation` measures the rep's discount against the
+already-tier-adjusted `unit_price`, so a Gold quote starts at zero points over, not fifteen.
+
+**Nothing half-configured can be saved.** `variant_service.save_variant_matrix` rejects the whole
+batch, naming the SKU, unless every row has `unit_cost > 0`, `base_price > 0`, and — for a
+non-subscription product — a quantity for every active warehouse.
 
 **Category is free text on the product; its ceiling is a separate table.** There is no categories
 table. `category_discount_limits` is keyed by category name, and **a category absent from it has no
@@ -248,3 +265,25 @@ Plans. Users stays its own sidebar entry at `/app/admin/users`.
 
 All price editing happens on the product form. The Price Lists tab is deliberately read-only so
 there is only ever one place a price comes from.
+
+
+## Who can see what
+
+`api/endpoints/catalog.py` holds writes behind a router-level `require_admin`. The read paths were
+**moved out** rather than duplicated, so there is one implementation of each:
+
+| Router | Guard | Routes |
+|---|---|---|
+| `catalog.py` | `require_admin` | currencies, tiers, category ceilings, product writes, archive/restore/delete, generate-variants, the variant matrix, the price matrix, subscription plans, customers, approval rules |
+| `products.py` | admin, sales_rep, sales_manager, finance | `GET /products` (paginated, searchable, sortable), `GET /products/{id}`, `GET /categories`, `GET /catalog/stats` |
+| `warehouses.py` | admin, finance | warehouse CRUD, `GET`/`POST /admin/stock` |
+
+In the UI, **Admin Management (`/app/admin/*`) is admin-only**. Non-admins get the same screens as
+separate sidebar entries instead: `Products` (`/app/products`, read-only, for rep / manager /
+finance) and `Warehouses` (`/app/warehouses`, full CRUD, for finance). Both mount the same
+components with a `readOnly` prop rather than a second copy, and an admin sees neither entry —
+they already have those screens as tabs.
+
+`GET /products` is the one server-paginated list (`Page[ProductListRow]`, reusing `Pagination` /
+`get_pagination` from `api/deps.py`). Every other table sorts client-side through
+`hooks/use-table-sort.ts` + `components/sortable-header.tsx`; they are small and fetched whole.
