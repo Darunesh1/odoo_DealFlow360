@@ -42,7 +42,14 @@ async def seed_demo_data() -> None:
         upsert_price_list_item,
         upsert_stock_item,
     )
-    from app.schemas.catalog import PriceListCreate, PriceListItemUpsert, ProductCreate, StockUpsert, WarehouseCreate
+    from app.schemas.catalog import (
+        PriceListCreate,
+        PriceListItemUpsert,
+        ProductCategoryCreate,
+        ProductCreate,
+        StockUpsert,
+        WarehouseCreate,
+    )
     from app.schemas.customer import CustomerCreate, CustomerTierCreate
     from app.models.quotation import RiskBand
     from app.models.user import Role
