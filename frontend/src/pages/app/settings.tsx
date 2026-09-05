@@ -176,7 +176,7 @@ function ChangePassword() {
 }
 
 function DangerZone() {
-  const { user, logout } = useAuth()
+  const { user, logout, isAdmin } = useAuth()
   const navigate = useNavigate()
 
   const remove = useMutation({
@@ -204,7 +204,7 @@ function DangerZone() {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {user?.is_superuser ? (
+        {isAdmin ? (
           <p className="text-sm text-muted-foreground">
             Administrator accounts cannot be deleted from here. Ask another administrator
             to remove it from the user list.

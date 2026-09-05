@@ -34,7 +34,7 @@ const SECTIONS: RailSection[] = [
 
 /** The routes the API actually serves. Doubles as the hero's proof. */
 const ROUTES = [
-  { method: "POST", path: "/auth/register" },
+  { method: "POST", path: "/auth/accept-invite" },
   { method: "POST", path: "/auth/login" },
   { method: "POST", path: "/auth/refresh" },
   { method: "POST", path: "/auth/logout" },
@@ -232,7 +232,7 @@ function Hero() {
             style={{ "--rise-delay": "180ms" } as React.CSSProperties}
           >
             <Button asChild size="lg">
-              <Link to={isAuthenticated ? "/app" : "/register"}>
+              <Link to={isAuthenticated ? "/app" : "/login"}>
                 {isAuthenticated ? "Open the app" : "Get started"}
                 <ArrowRightIcon className="size-4" />
               </Link>
@@ -262,7 +262,7 @@ function Hero() {
               <DealFlowMark className="size-4 text-primary" />
               <span className="label-mono text-muted-foreground">Working on day zero</span>
               <span className="ml-auto font-mono text-xs text-muted-foreground">
-                /api/v1
+                /api
               </span>
             </div>
             <ul className="divide-y">
@@ -396,7 +396,7 @@ export default function LandingPage() {
                 className="mt-8"
                 variant={plan.featured ? "default" : "outline"}
               >
-                <Link to={isAuthenticated ? "/app" : "/register"}>{plan.cta}</Link>
+                <Link to={isAuthenticated ? "/app" : "/login"}>{plan.cta}</Link>
               </Button>
             </div>
           ))}
@@ -437,7 +437,7 @@ export default function LandingPage() {
             table, running on your own machine.
           </p>
           <Button asChild size="lg" className="mt-8">
-            <Link to={isAuthenticated ? "/app" : "/register"}>
+            <Link to={isAuthenticated ? "/app" : "/login"}>
               {isAuthenticated ? "Open the app" : "Create your account"}
               <ArrowRightIcon className="size-4" />
             </Link>

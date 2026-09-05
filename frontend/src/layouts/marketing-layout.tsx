@@ -35,7 +35,7 @@ const FOOTER_COLUMNS = [
     title: "Account",
     links: [
       { label: "Sign in", href: "/login" },
-      { label: "Create account", href: "/register" },
+      { label: "Sign in", href: "/login" },
       { label: "Reset password", href: "/forgot-password" },
     ],
   },
@@ -58,7 +58,7 @@ function AuthActions({ onNavigate }: { onNavigate?: () => void }) {
         <Link to="/login">Sign in</Link>
       </Button>
       <Button asChild size="sm" onClick={onNavigate}>
-        <Link to="/register">Get started</Link>
+        <Link to="/login">Sign in</Link>
       </Button>
     </>
   )

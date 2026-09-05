@@ -18,7 +18,6 @@ export interface AuthContextValue {
   isBootstrapping: boolean
   isAuthenticated: boolean
   login: (email: string, password: string) => Promise<void>
-  register: (fullName: string, email: string, password: string) => Promise<void>
   logout: () => Promise<void>
   refreshUser: () => Promise<void>
 }
@@ -69,13 +68,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [queryClient]
   )
 
-  const register = useCallback(
-    async (fullName: string, email: string, password: string) => {
-      await api.post("/auth/register", { email, password, full_name: fullName })
-    },
-    []
-  )
-
   const logout = useCallback(async () => {
     const refreshToken = tokenStore.getRefresh()
     if (refreshToken) {
@@ -96,11 +88,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isBootstrapping: hasSession && isLoading && !isFetched,
       isAuthenticated: hasSession && Boolean(user),
       login,
-      register,
       logout,
       refreshUser,
     }),
-    [user, hasSession, isLoading, isFetched, login, register, logout, refreshUser]
+    [user, hasSession, isLoading, isFetched, login, logout, refreshUser]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

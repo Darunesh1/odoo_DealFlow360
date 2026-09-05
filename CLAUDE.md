@@ -35,12 +35,15 @@ The suite runs against the **real** Postgres and Redis containers, not mocks. `c
 truncates `users` and flushes Redis after every test, so a test run wipes your dev data.
 Emails are the exception — the `mock_emails` fixture monkeypatches `.delay` so no worker is needed.
 
-Promote the first superuser directly in the database (no API route grants it):
+There is **no public signup**. `POST /auth/register` does not exist: an Admin creates accounts
+via `POST /admin/users` and the invitee sets their own password from an emailed link
+(`POST /auth/accept-invite`). Startup seeds `admin@dealflow360.com` / `admin12345`, plus one
+demo account per role in development (`rep@`, `manager@`, `finance@`, `customer@`, same
+password) — see `backend/app/core/seed.py`.
 
-```bash
-docker compose -f backend/docker-compose.yml exec db psql -U postgres -d backend_db \
-  -c "UPDATE users SET is_superuser = true WHERE email = 'you@example.com';"
-```
+**`make test` shares `backend_db` with the dev server and truncates `users` after every test**,
+so a test run wipes the seeded accounts. Restart the API (or touch a file, with `--reload`) to
+re-seed before using the app again.
 
 ## How the two halves connect
 
@@ -49,14 +52,15 @@ there is **no dev proxy** — the browser calls the API cross-origin and CORS is
 Two variables have to agree:
 
 - `backend/.env` → `BACKEND_CORS_ORIGINS=http://localhost:5173,http://localhost:4173`
-- `frontend/.env` → `VITE_API_URL=http://localhost:8000/api/v1`
+- `frontend/.env` → `VITE_API_URL=http://localhost:8000/api`
 
 `allow_credentials=True` means a wildcard origin is rejected by browsers; origins must be listed
 explicitly. Change a port or host on either side and both files need editing.
 
-`VITE_API_URL` already includes `/api/v1`, so every frontend call is written **relative to the
-version prefix** (`api.post("/auth/login")`). The health probes are deliberately mounted at the
-root (`/health`, `/health/ready`), outside the prefix, so orchestrators need not know the version.
+`VITE_API_URL` already includes `/api`, so every frontend call is written **relative to that
+prefix** (`api.post("/auth/login")`). The API is deliberately unversioned: one frontend ships
+with this backend, so there is no external client to keep a `/v1` alive for. The health probes
+sit at the root (`/health`, `/health/ready`), outside the prefix, for orchestrators.
 
 ### Auth token flow
 
@@ -80,18 +84,37 @@ concerns (status codes, 404s, authorization guards); services hold the SQLAlchem
 re-exported flat from `app.services`. Add new service functions to both
 `user_service.py` and the `__init__.py` `__all__`.
 
-Authorization comes from dependencies in `app/api/deps.py`: `get_current_user`,
-`get_current_verified_user`, `get_current_active_superuser`. The admin router applies its guard
-**once at the router level** (`APIRouter(dependencies=[...])`), so every route added to `admin.py`
-is superuser-only automatically.
+Authorization is role-based. A user holds **many** roles (`Role` enum in `app/models/user.py`:
+`admin`, `sales_rep`, `sales_manager`, `finance`, `customer`), stored in the `user_roles`
+association table. `require_roles(*roles)` in `app/api/deps.py` builds a dependency admitting
+anyone holding at least one of them; `require_admin` is the only shortcut built so far — add
+others alongside their first route. The admin router applies its guard **once at the router
+level** (`APIRouter(dependencies=[...])`), so every route added to `admin.py` is admin-only
+automatically.
 
-Two invariants the routes enforce deliberately, worth preserving:
+`User.role_links` uses `lazy="selectin"`, which is load-bearing: roles are read in the auth
+dependency, during response serialization after the endpoint returns, and by the delete-orphan
+cascade — all places where an asyncpg lazy load would raise `MissingGreenlet`. Because it is set
+at the mapper, no query needs an explicit `selectinload`.
 
-- `UserUpdateMe` cannot carry `is_active` / `is_superuser` / `is_verified`. That schema boundary —
+`User.roles` is a read-only property, so `update_user`'s blind `setattr` loop must keep popping
+`roles` before it runs. Role writes go through `apply_roles()`, which reconciles rather than
+replacing the collection — assigning a fresh list orphans and re-inserts rows with identical
+composite keys and intermittently violates the primary key.
+
+Invariants the routes enforce deliberately, worth preserving:
+
+- `UserUpdateMe` cannot carry `roles` / `is_active` / `is_verified`. That schema boundary —
   not a runtime check — is what stops `PATCH /users/me` from being a privilege-escalation route.
-  Admin-only fields live in `UserUpdateAdmin`.
-- An admin cannot demote, deactivate or delete their **own** account through `/admin/users/{id}`,
-  so a deployment can never end up with zero admins.
+  Admin-only fields live in `UserUpdateAdmin`, where `roles` is a full replacement, not a merge.
+- An admin cannot remove their own `admin` role, deactivate or delete their **own** account,
+  so a deployment can never end up with zero admins. Seeding also re-grants `admin` to
+  `FIRST_ADMIN_EMAIL` on boot if it is somehow missing.
+
+- An invitation is single-use, and what enforces that is the **password**, not `is_verified`:
+  a pending account stores an unusable sentinel (`"!" + random`, see `core/security.py`) that
+  bcrypt can never match. Keying on `is_verified` would be unsafe, because changing your email
+  resets that flag and would re-arm an old invite token against a live account.
 
 Endpoints that take an email address (`/forgot-password`, `/resend-verification`) always return the
 same `GENERIC_EMAIL_RESPONSE` regardless of whether the account exists — do not add a branch that
@@ -104,9 +127,15 @@ verification link in dev (read the `make worker` terminal).
 ## Frontend layout
 
 Route tree and lazy-loading live in `src/App.tsx`; `components/route-guards.tsx` provides
-`RequireAuth` / `RequireGuest` / `RequireAdmin`. Server state is TanStack Query — the current user
-is the `["me"]` query owned by `features/auth/auth-context.tsx`; read it through `useAuth()`, don't
-re-fetch `/users/me` elsewhere. Forms are react-hook-form + zod.
+`RequireAuth` / `RequireGuest` / `RequireRole` (and `RequireAdmin`, a thin alias). Server state is
+TanStack Query — the current user is the `["me"]` query owned by `features/auth/auth-context.tsx`;
+read it through `useAuth()`, which also exposes `hasRole(...roles)` and `isAdmin`. Don't re-fetch
+`/users/me` elsewhere, and don't read `user.roles` directly when `hasRole` will do. Forms are
+react-hook-form + zod.
+
+Role names and their display labels live once in `types/api.ts` (`ROLES`, `ROLE_LABELS`) and must
+stay in step with the backend `Role` enum. `components/role-picker.tsx` holds the shared checkbox
+group and badge rendering.
 
 `src/config.ts` is the rebranding entry point (`APP_NAME`, `APP_TAGLINE`, `STORAGE_KEYS`);
 `src/index.css` holds the design tokens — `--primary` and `--brass` drive both themes.

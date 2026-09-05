@@ -64,7 +64,7 @@ async def root():
         "title": app.title,
         "version": app.version,
         "docs_url": "/docs",
-        "api_prefix": settings.API_V1_PREFIX,
+        "api_prefix": settings.API_PREFIX,
         "status": "healthy",
     }
 

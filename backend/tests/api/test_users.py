@@ -1,12 +1,11 @@
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.conftest import API, auth_headers, register_user, verify_latest_user
+from tests.conftest import API, auth_headers, make_user
 
 
-async def test_get_me_success(client: AsyncClient, mock_emails):
-    await register_user(client, "me@example.com", full_name="Me User")
-    await verify_latest_user(client, mock_emails)
+async def test_get_me_success(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "me@example.com", full_name="Me User")
     headers = await auth_headers(client, "me@example.com")
 
     response = await client.get(f"{API}/users/me", headers=headers)
@@ -21,8 +20,8 @@ async def test_get_me_unauthorized(client: AsyncClient):
     assert response.status_code == 401
 
 
-async def test_get_me_rejects_a_refresh_token(client: AsyncClient, mock_emails):
-    await register_user(client, "tokentype@example.com")
+async def test_get_me_rejects_a_refresh_token(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "tokentype@example.com")
     from tests.conftest import login
 
     tokens = await login(client, "tokentype@example.com")
@@ -34,9 +33,8 @@ async def test_get_me_rejects_a_refresh_token(client: AsyncClient, mock_emails):
     assert response.json()["detail"] == "Invalid token type, access token required"
 
 
-async def test_update_me_success(client: AsyncClient, mock_emails):
-    await register_user(client, "update@example.com", full_name="Original Name")
-    await verify_latest_user(client, mock_emails)
+async def test_update_me_success(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "update@example.com", full_name="Original Name")
     headers = await auth_headers(client, "update@example.com")
 
     response = await client.patch(
@@ -46,24 +44,24 @@ async def test_update_me_success(client: AsyncClient, mock_emails):
     assert response.json()["full_name"] == "Updated Name"
 
 
-async def test_update_me_cannot_grant_superuser(client: AsyncClient, mock_emails):
+async def test_update_me_cannot_grant_roles(client: AsyncClient, mock_emails, db_session: AsyncSession):
     """Regression: PATCH /users/me must not accept privilege fields."""
-    await register_user(client, "escalate@example.com")
+    await make_user(db_session, "escalate@example.com", is_verified=False)
     headers = await auth_headers(client, "escalate@example.com")
 
     response = await client.patch(
         f"{API}/users/me",
         headers=headers,
-        json={"is_superuser": True, "is_verified": True, "is_active": True},
+        json={"roles": ["admin"], "is_verified": True, "is_active": True},
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["is_superuser"] is False
+    assert body["roles"] == ["sales_rep"]
     assert body["is_verified"] is False
 
     # And the flags really did not change server side.
     me = await client.get(f"{API}/users/me", headers=headers)
-    assert me.json()["is_superuser"] is False
+    assert me.json()["roles"] == ["sales_rep"]
 
     # The escalated account still cannot reach the admin area.
     admin = await client.get(f"{API}/admin/users", headers=headers)
@@ -71,10 +69,8 @@ async def test_update_me_cannot_grant_superuser(client: AsyncClient, mock_emails
 
 
 async def test_update_me_email_change_resets_verification(
-    client: AsyncClient, mock_emails
-):
-    await register_user(client, "changing@example.com")
-    await verify_latest_user(client, mock_emails)
+    client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "changing@example.com")
     headers = await auth_headers(client, "changing@example.com")
     mock_emails["verification_emails"].clear()
 
@@ -88,9 +84,9 @@ async def test_update_me_email_change_resets_verification(
     assert len(mock_emails["verification_emails"]) == 1
 
 
-async def test_update_me_email_conflict(client: AsyncClient, mock_emails):
-    await register_user(client, "usera@example.com", full_name="User A")
-    await register_user(client, "userb@example.com", full_name="User B")
+async def test_update_me_email_conflict(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "usera@example.com", full_name="User A")
+    await make_user(db_session, "userb@example.com", full_name="User B")
     headers_b = await auth_headers(client, "userb@example.com")
 
     response = await client.patch(
@@ -100,8 +96,8 @@ async def test_update_me_email_conflict(client: AsyncClient, mock_emails):
     assert response.json()["detail"] == "A user with this email address already exists."
 
 
-async def test_delete_me(client: AsyncClient, mock_emails):
-    await register_user(client, "goodbye@example.com")
+async def test_delete_me(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "goodbye@example.com")
     headers = await auth_headers(client, "goodbye@example.com")
 
     response = await client.delete(f"{API}/users/me", headers=headers)

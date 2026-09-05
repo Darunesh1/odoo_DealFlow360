@@ -2,11 +2,12 @@ from app.schemas.common import Message, Page
 from app.schemas.token import RefreshRequest, Token, TokenPayload
 from app.schemas.user import (
     EmailRequest,
+    InviteAccept,
     PasswordChange,
     PasswordResetConfirm,
     TokenRequest,
     UserBase,
-    UserCreate,
+    UserInvite,
     UserRead,
     UserUpdateAdmin,
     UserUpdateMe,
@@ -14,6 +15,7 @@ from app.schemas.user import (
 
 __all__ = [
     "EmailRequest",
+    "InviteAccept",
     "Message",
     "Page",
     "PasswordChange",
@@ -23,7 +25,7 @@ __all__ = [
     "TokenPayload",
     "TokenRequest",
     "UserBase",
-    "UserCreate",
+    "UserInvite",
     "UserRead",
     "UserUpdateAdmin",
     "UserUpdateMe",

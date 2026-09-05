@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/card"
 import { API_DOCS_URL, APP_NAME } from "@/config"
 import { useAuth } from "@/features/auth/use-auth"
+import { ROLE_LABELS } from "@/types/api"
 import { api, errorMessage } from "@/lib/api"
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -37,7 +38,10 @@ function AccountFacts() {
 
   const facts = [
     { label: "Member since", value: dateFormatter.format(new Date(user.created_at)) },
-    { label: "Role", value: user.is_superuser ? "Administrator" : "Member" },
+    {
+      label: user.roles.length === 1 ? "Role" : "Roles",
+      value: user.roles.map((role) => ROLE_LABELS[role]).join(", ") || "None assigned",
+    },
     { label: "Email status", value: user.is_verified ? "Verified" : "Unverified" },
     { label: "Account ID", value: user.id.slice(0, 8), mono: true },
   ]
@@ -112,7 +116,7 @@ const NEXT_STEPS = [
 ]
 
 export default function DashboardPage() {
-  const { user } = useAuth()
+  const { user, isAdmin } = useAuth()
   const firstName = user?.full_name?.trim().split(" ")[0]
 
   return (
@@ -165,7 +169,7 @@ export default function DashboardPage() {
               Open API reference
             </a>
           </Button>
-          {user?.is_superuser && (
+          {isAdmin && (
             <Badge variant="secondary" className="gap-1.5">
               <CircleCheckIcon className="size-3" />
               Admin tools unlocked

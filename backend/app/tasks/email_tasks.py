@@ -105,6 +105,27 @@ def send_verification_email(email: str, token: str, full_name: str = "") -> str:
     return send_email(email, "Verify your email address", html)
 
 
+@celery_app.task(name="app.tasks.email_tasks.send_invite_email")
+def send_invite_email(email: str, token: str, full_name: str = "") -> str:
+    """Celery task to send an administrator's invitation to a new account."""
+    # There is no public signup: this link is how every user sets their first
+    # password, so it doubles as the account activation step.
+    link = f"{settings.FRONTEND_URL}/accept-invite?token={token}"
+    html = render_email(
+        heading=f"You have been invited to {settings.EMAILS_FROM_NAME}",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            "<p>An administrator has created an account for you. "
+            "Choose a password to activate it and sign in.</p>"
+            f"<p style='font-size: 13px; color: #666;'>This link expires in {settings.INVITE_EXPIRE_HOURS} hours "
+            "and can only be used once. If you were not expecting this, you can ignore this email.</p>"
+        ),
+        button_label="Set your password",
+        button_url=link,
+    )
+    return send_email(email, f"Your {settings.EMAILS_FROM_NAME} invitation", html)
+
+
 @celery_app.task(name="app.tasks.email_tasks.send_welcome_email")
 def send_welcome_email(email: str, full_name: str = "") -> str:
     """Celery task to send a welcome email after verification."""

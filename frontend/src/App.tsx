@@ -17,7 +17,7 @@ import { DealFlowMark } from "@/components/brand";
 // for the sidebar, the data table and the dialogs behind the sign-in wall.
 const LandingPage = lazy(() => import("@/pages/landing"));
 const LoginPage = lazy(() => import("@/pages/auth/login"));
-const RegisterPage = lazy(() => import("@/pages/auth/register"));
+const AcceptInvitePage = lazy(() => import("@/pages/auth/accept-invite"));
 const ForgotPasswordPage = lazy(() => import("@/pages/auth/forgot-password"));
 const ResetPasswordPage = lazy(() => import("@/pages/auth/reset-password"));
 const VerifyEmailPage = lazy(() => import("@/pages/auth/verify-email"));
@@ -57,14 +57,9 @@ export default function App() {
                   </RequireGuest>
                 }
               />
-              <Route
-                path="/register"
-                element={
-                  <RequireGuest>
-                    <RegisterPage />
-                  </RequireGuest>
-                }
-              />
+              {/* Accounts are created by an administrator, so the way in is an
+                  invitation link rather than a signup form. */}
+              <Route path="/accept-invite" element={<AcceptInvitePage />} />
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />
               {/* Reachable while signed in: a new email address needs confirming too. */}

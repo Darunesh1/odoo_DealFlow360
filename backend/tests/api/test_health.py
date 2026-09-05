@@ -18,4 +18,4 @@ async def test_readiness_reports_each_dependency(client: AsyncClient):
 async def test_root_advertises_the_api_prefix(client: AsyncClient):
     response = await client.get("/")
     assert response.status_code == 200
-    assert response.json()["api_prefix"] == "/api/v1"
+    assert response.json()["api_prefix"] == "/api"

@@ -80,10 +80,18 @@ async def init_db() -> None:
         logger.info("Dev environment detected: verifying database exists...")
         await create_database_if_not_exists()
 
-    # Import models here to register them with the Base metadata before table creation
-    from app.models.user import User  # noqa: F401
+    # Import models here to register them with the Base metadata before table
+    # creation. UserRole must be imported too, or its table is silently skipped
+    # and every authenticated request fails on a missing relation.
+    from app.models.user import Role, User, UserRole  # noqa: F401
 
     logger.info("Initializing database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     logger.info("Database tables initialized successfully.")
+
+    # Imported here rather than at module scope to avoid a
+    # database -> seed -> services -> models -> database import cycle.
+    from app.core.seed import seed_users
+
+    await seed_users()

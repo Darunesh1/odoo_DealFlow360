@@ -8,14 +8,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user, get_db, get_redis
 from app.core.redis import is_token_revoked, revoke_token
 from app.core.security import (
+    INVITE_TOKEN_TYPE,
     REFRESH_TOKEN_TYPE,
     RESET_TOKEN_TYPE,
     VERIFICATION_TOKEN_TYPE,
     create_access_token,
+    create_invite_token,
     create_password_reset_token,
     create_refresh_token,
     create_verification_token,
     decode_token,
+    is_password_usable,
     parse_uuid,
     verify_password,
 )
@@ -24,20 +27,20 @@ from app.schemas.common import Message
 from app.schemas.token import RefreshRequest, Token, TokenPayload
 from app.schemas.user import (
     EmailRequest,
+    InviteAccept,
     PasswordChange,
     PasswordResetConfirm,
     TokenRequest,
-    UserCreate,
-    UserRead,
 )
 from app.services import (
-    create_user,
+    accept_invite,
     get_user_by_email,
     get_user_by_id,
     set_password,
     verify_user_email,
 )
 from app.tasks.email_tasks import (
+    send_invite_email,
     send_password_reset_email,
     send_verification_email,
     send_welcome_email,
@@ -110,24 +113,42 @@ async def _load_user_from_email_token(
     return user
 
 
-@router.post("/register", response_model=UserRead, status_code=status.HTTP_201_CREATED)
-async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)) -> Any:
-    """Registers a new user and triggers email verification."""
-    if await get_user_by_email(db, email=user_in.email):
+@router.post("/accept-invite", response_model=Message)
+async def accept_invitation(
+    body: InviteAccept, db: AsyncSession = Depends(get_db)
+) -> Any:
+    """Sets the first password on an invited account, activating it.
+
+    There is no public signup, so this is how every user other than the seeded
+    administrator gets a password.
+    """
+    user = await _load_user_from_email_token(db, body.token, INVITE_TOKEN_TYPE)
+
+    if not user.is_active:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A user with this email already exists in the system.",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="User account is inactive",
         )
 
-    new_user = await create_user(db, obj_in=user_in)
+    # The token is a stateless JWT, so it stays valid until it expires. What
+    # makes the invite single use is the password: accepting replaces the
+    # unusable sentinel with a real hash, and a second attempt lands here.
+    #
+    # A 400 rather than an idempotent 200, because this request carries a
+    # new_password that will not be applied; 200 would imply it was.
+    if is_password_usable(user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "This invitation has already been used. Sign in instead, "
+                "or use forgot password if you need a new one."
+            ),
+        )
 
-    send_verification_email.delay(
-        email=new_user.email,
-        token=create_verification_token(new_user.id),
-        full_name=new_user.full_name or "",
-    )
+    await accept_invite(db, db_obj=user, new_password=body.new_password)
+    send_welcome_email.delay(email=user.email, full_name=user.full_name or "")
 
-    return new_user
+    return Message(message="Password set. You can now sign in.")
 
 
 @router.post("/login", response_model=Token)
@@ -268,11 +289,20 @@ async def forgot_password(
     """Starts a password reset, without disclosing whether the address exists."""
     user = await get_user_by_email(db, email=body.email)
     if user and user.is_active:
-        send_password_reset_email.delay(
-            email=user.email,
-            token=create_password_reset_token(user.id),
-            full_name=user.full_name or "",
-        )
+        # Someone who never accepted their invite has no password to reset, and
+        # a reset link would leave them unverified. Send a fresh invite instead.
+        if is_password_usable(user.hashed_password):
+            send_password_reset_email.delay(
+                email=user.email,
+                token=create_password_reset_token(user.id),
+                full_name=user.full_name or "",
+            )
+        else:
+            send_invite_email.delay(
+                email=user.email,
+                token=create_invite_token(user.id),
+                full_name=user.full_name or "",
+            )
     return GENERIC_EMAIL_RESPONSE
 
 

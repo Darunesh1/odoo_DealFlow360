@@ -1,12 +1,11 @@
-from typing import Optional, Sequence
+from typing import Iterable, Optional, Sequence
 import uuid
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.security import hash_password
-from app.models.user import User
-from app.schemas.user import UserCreate
+from app.core.security import hash_password, unusable_password
+from app.models.user import Role, User, UserRole
 
 
 def normalize_email(email: str) -> str:
@@ -28,20 +27,55 @@ async def get_user_by_id(db: AsyncSession, user_id: uuid.UUID) -> Optional[User]
     return result.scalar_one_or_none()
 
 
-async def create_user(db: AsyncSession, obj_in: UserCreate) -> User:
-    """Hashes the password and creates a new User record in the database."""
+def apply_roles(db_obj: User, roles: Iterable[Role]) -> None:
+    """Reconciles a user's role grants in place. The caller commits.
+
+    Deliberately not `db_obj.role_links = [...]`: replacing the collection
+    wholesale orphans every existing row and inserts fresh ones with identical
+    composite keys, and the unit of work does not reliably order the deletes
+    before the inserts. That produces an intermittent unique violation on any
+    role the user already held. Reconciling leaves untouched rows alone.
+    """
+    wanted = {Role(role) for role in roles}
+    current = {link.role for link in db_obj.role_links}
+
+    for link in list(db_obj.role_links):
+        if link.role not in wanted:
+            db_obj.role_links.remove(link)  # delete-orphan issues the DELETE
+    for role in sorted(wanted - current, key=lambda r: r.value):
+        db_obj.role_links.append(UserRole(role=role))
+
+
+async def create_invited_user(
+    db: AsyncSession,
+    *,
+    email: str,
+    full_name: Optional[str],
+    roles: Iterable[Role],
+) -> User:
+    """Creates an account that cannot be signed into until its invite is accepted."""
     db_user = User(
-        email=normalize_email(obj_in.email),
-        hashed_password=hash_password(obj_in.password),
-        full_name=obj_in.full_name,
+        email=normalize_email(email),
+        hashed_password=unusable_password(),
+        full_name=full_name,
         is_active=True,
-        is_superuser=False,
         is_verified=False,
+        role_links=[UserRole(role=Role(r)) for r in dict.fromkeys(roles)],
     )
     db.add(db_user)
     await db.commit()
     await db.refresh(db_user)
     return db_user
+
+
+async def accept_invite(db: AsyncSession, db_obj: User, new_password: str) -> User:
+    """Sets the first password on an invited account and marks it verified."""
+    db_obj.hashed_password = hash_password(new_password)
+    db_obj.is_verified = True
+    db.add(db_obj)
+    await db.commit()
+    await db.refresh(db_obj)
+    return db_obj
 
 
 async def update_user(db: AsyncSession, db_obj: User, obj_in: BaseModel) -> User:
@@ -59,6 +93,11 @@ async def update_user(db: AsyncSession, db_obj: User, obj_in: BaseModel) -> User
     email = update_data.pop("email", None)
     if email:
         db_obj.email = normalize_email(email)
+
+    # roles is a read-only property, so it must never reach the setattr loop.
+    roles = update_data.pop("roles", None)
+    if roles is not None:
+        apply_roles(db_obj, roles)
 
     for field, value in update_data.items():
         setattr(db_obj, field, value)

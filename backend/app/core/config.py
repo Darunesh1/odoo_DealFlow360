@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     ENVIRONMENT: str = "development"
-    API_V1_PREFIX: str = "/api/v1"
+    API_PREFIX: str = "/api"
 
     # Public URL of the frontend application. Used to build links inside emails.
     FRONTEND_URL: str = "http://localhost:5173"
@@ -43,6 +43,16 @@ class Settings(BaseSettings):
     # Single use email token lifetimes
     EMAIL_VERIFICATION_EXPIRE_HOURS: int = 24
     PASSWORD_RESET_EXPIRE_MINUTES: int = 30
+    INVITE_EXPIRE_HOURS: int = 72
+
+    # Bootstrap administrator, created on startup when missing. There is no
+    # public signup, so without this nobody could ever sign in.
+    FIRST_ADMIN_EMAIL: str = "admin@dealflow360.com"
+    FIRST_ADMIN_PASSWORD: str = "admin12345"
+
+    # Seeds one ready to use account per role. Development only, so a real
+    # deployment never gets anything beyond the administrator above.
+    SEED_DEMO_USERS: bool = True
 
     # SMTP Configuration (Optional)
     SMTP_HOST: Optional[str] = None

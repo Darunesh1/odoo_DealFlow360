@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import secrets
 from typing import Any, Optional, Union
 import uuid
 import bcrypt
@@ -12,12 +13,32 @@ ACCESS_TOKEN_TYPE = "access"
 REFRESH_TOKEN_TYPE = "refresh"
 VERIFICATION_TOKEN_TYPE = "verification"
 RESET_TOKEN_TYPE = "reset"
+INVITE_TOKEN_TYPE = "invite"
+
+# Marker for an account that has never had a password set, i.e. an invitation
+# nobody has accepted yet. bcrypt rejects the leading "!" as an invalid salt, so
+# verify_password returns False for every possible input without special casing.
+#
+# This, rather than is_verified, is what makes an invite single use. Keying on
+# is_verified would be unsafe: changing your email address resets that flag, and
+# an old invite token could then be replayed to overwrite a live password.
+UNUSABLE_PASSWORD_PREFIX = "!"
 
 
 def hash_password(password: str) -> str:
     """Generates a secure bcrypt hash of a password."""
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+
+def unusable_password() -> str:
+    """Builds a password hash that no input can ever verify against."""
+    return UNUSABLE_PASSWORD_PREFIX + secrets.token_urlsafe(32)
+
+
+def is_password_usable(hashed_password: str) -> bool:
+    """False while an account is still an unaccepted invitation."""
+    return not hashed_password.startswith(UNUSABLE_PASSWORD_PREFIX)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -87,6 +108,13 @@ def create_password_reset_token(subject: Union[str, Any]) -> str:
         subject,
         RESET_TOKEN_TYPE,
         timedelta(minutes=settings.PASSWORD_RESET_EXPIRE_MINUTES),
+    )
+
+
+def create_invite_token(subject: Union[str, Any]) -> str:
+    """Generates the token embedded in an administrator's invitation email."""
+    return create_email_token(
+        subject, INVITE_TOKEN_TYPE, timedelta(hours=settings.INVITE_EXPIRE_HOURS)
     )
 
 

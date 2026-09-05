@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
 from app.core.security import create_verification_token
-from app.models.user import User
+from app.models.user import Role, User
 from app.schemas.common import Message
 from app.schemas.user import UserRead, UserUpdateMe
 from app.services import (
@@ -33,8 +33,8 @@ async def update_user_me(
 ) -> Any:
     """Updates the authenticated user's own profile.
 
-    UserUpdateMe intentionally cannot carry is_superuser / is_active / is_verified,
-    so this route cannot be used to escalate privileges.
+    UserUpdateMe intentionally cannot carry roles / is_active / is_verified, so
+    this route cannot be used to escalate privileges.
     """
     email_changed = False
     if user_in.email:
@@ -67,10 +67,10 @@ async def delete_user_me(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Permanently deletes the authenticated user's own account."""
-    if current_user.is_superuser:
+    if current_user.has_role(Role.ADMIN):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Superusers cannot delete their own account.",
+            detail="Administrators cannot delete their own account.",
         )
 
     await delete_user(db, db_obj=current_user)
