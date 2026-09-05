@@ -14,329 +14,267 @@ DEMO_USERS = [
 
 
 async def seed_demo_data() -> None:
-    """Seeds the catalog, customers, stock, and approval rules used by the demo."""
+    """Seeds the mockup's catalog: currencies, tiers, category ceilings,
+    products with their generated variants, per-warehouse stock, tier prices,
+    customers and the approval chain.
+
+    Idempotent and keyed on natural names, so a restart repairs rather than
+    duplicates.
+    """
     from sqlalchemy import select
 
     from app.core.config import settings
     from app.core.database import async_session_maker
     from app.models.approval import ApprovalRule, ApprovalRuleStep
-    from app.models.catalog import PriceList, PriceListItem, Product, ProductCategory, RecurringInterval, ProductUnit
-    from app.models.customer import Customer, CustomerTier
-    from app.models.inventory import StockItem, Warehouse
-    from app.services import (
-        create_customer,
-        create_customer_tier,
-        create_price_list,
-        create_product,
-        create_product_category,
-        create_warehouse,
-        get_customer_by_id,
-        get_customer_tier_by_code,
-        get_customer_tier_by_id,
-        get_customer_tier_by_code,
-        get_price_list_by_id,
-        get_price_list_item,
-        get_product_by_sku,
-        get_product_category_by_code,
-        get_warehouse_by_code,
-        upsert_price_list_item,
-        upsert_stock_item,
+    from app.models.catalog import (
+        CategoryDiscountLimit,
+        Currency,
+        Product,
+        ProductUnit,
+        ProductVariant,
+        RecurringInterval,
     )
+    from app.models.customer import Customer, CustomerTier
+    from app.models.inventory import Warehouse
+    from app.models.quotation import RiskBand
+    from app.models.user import Role
     from app.schemas.catalog import (
-        PriceListCreate,
-        PriceListItemUpsert,
-        ProductCategoryCreate,
+        CategoryLimitCreate,
         ProductCreate,
-        StockUpsert,
+        VariantAttributeInput,
+        VariantPriceInput,
+        VariantRowInput,
         WarehouseCreate,
     )
     from app.schemas.customer import CustomerCreate, CustomerTierCreate
-    from app.models.quotation import RiskBand
-    from app.models.user import Role
+    from app.services import catalog_service, variant_service
 
     if settings.ENVIRONMENT != "development" or not settings.SEED_DEMO_USERS:
         return
 
-    tiers = [
-        ("STANDARD", "Standard", 10.0, 1),
-        ("GOLD", "Gold", 15.0, 2),
-        ("ENTERPRISE", "Enterprise", 25.0, 3),
+    # (code, name, symbol, rate to base, is base)
+    currencies = [
+        ("USD", "US Dollar", "$", 1.0, True),
+        ("INR", "Indian Rupee", "\u20b9", 0.012, False),
     ]
-    categories = [
-        ("HARDWARE", "Hardware", 15.0, 1),
-        ("SOFTWARE", "Software", 10.0, 2),
-        ("SERVICES", "Services", 10.0, 3),
-    ]
+    # Screen 18's exact ceilings.
+    tiers = [("Bronze", 5.0), ("Silver", 10.0), ("Gold", 15.0)]
+    category_limits = [("Hardware", 15.0), ("Services", 10.0)]
+
+    # (name, category, unit, tax %, subscription interval, attributes)
     products = [
-        {
-            "sku": "LAPTOP-001",
-            "name": "Laptop",
-            "category_code": "HARDWARE",
-            "list_price": 1200,
-            "unit_cost": 850,
-            "tax_percent": 18,
-        },
-        {
-            "sku": "MONITOR-001",
-            "name": "Monitor",
-            "category_code": "HARDWARE",
-            "list_price": 300,
-            "unit_cost": 190,
-            "tax_percent": 18,
-        },
-        {
-            "sku": "BAG-001",
-            "name": "Laptop Bag",
-            "category_code": "HARDWARE",
-            "list_price": 45,
-            "unit_cost": 15,
-            "tax_percent": 18,
-        },
-        {
-            "sku": "INSTALL-001",
-            "name": "Installation Service",
-            "category_code": "SERVICES",
-            "list_price": 150,
-            "unit_cost": 60,
-            "tax_percent": 18,
-        },
-        {
-            "sku": "SUPPORT-001",
-            "name": "Support Plan",
-            "category_code": "SERVICES",
-            "list_price": 200,
-            "unit_cost": 80,
-            "tax_percent": 18,
-            "is_subscription": True,
-            "recurring_interval": RecurringInterval.MONTHLY,
-            "unit": ProductUnit.RECURRING,
-        },
-        {
-            "sku": "ENT-SUB-001",
-            "name": "Enterprise Subscription",
-            "category_code": "SOFTWARE",
-            "list_price": 500,
-            "unit_cost": 180,
-            "tax_percent": 18,
-            "is_subscription": True,
-            "recurring_interval": RecurringInterval.MONTHLY,
-            "unit": ProductUnit.RECURRING,
-        },
+        (
+            "Laptop Pro 14", "Hardware", ProductUnit.EACH, 15.0, None,
+            [("Color", ["Black", "Silver"]), ("RAM", ["8GB", "16GB"])],
+        ),
+        (
+            "Docking Station", "Hardware", ProductUnit.EACH, 15.0, None,
+            [("Color", ["Black", "Silver", "White"])],
+        ),
+        ("Onsite Setup Service", "Services", ProductUnit.EACH, 10.0, None, []),
+        ("Extended Warranty", "Services", ProductUnit.EACH, 10.0, None, []),
+        (
+            "Care Plan 2yr", "Subscription", ProductUnit.RECURRING, 0.0,
+            RecurringInterval.MONTHLY, [],
+        ),
     ]
+    # SKU suffix -> (unit cost, Bronze USD price)
+    pricing = {
+        "Laptop Pro 14": (850.0, 1200.0),
+        "Docking Station": (110.0, 180.0),
+        "Onsite Setup Service": (180.0, 450.0),
+        "Extended Warranty": (60.0, 180.0),
+        "Care Plan 2yr": (18.0, 46.0),
+    }
     warehouses = [
-        ("CHN", "Chennai Warehouse", "Chennai, India", 50, 5, 1.0, 1),
-        ("AMD", "Ahmedabad Warehouse", "Ahmedabad, India", 40, 4, 1.1, 2),
+        ("MAIN", "Main Warehouse", "Chennai, India", 50, 5, 1.0, 1),
+        ("EAST", "East Depot", "Ahmedabad, India", 40, 4, 1.1, 2),
+    ]
+    customers = [
+        ("Acme Corp", "Gold", "acme@dealflow360.com"),
+        ("Beta Industries", "Silver", "procurement@betaindustries.com"),
+        ("Nova Retail", "Bronze", "buying@novaretail.com"),
     ]
 
     async with async_session_maker() as session:
-        tier_by_code: dict[str, CustomerTier] = {}
-        for code, name, max_discount, order in tiers:
-            tier = await get_customer_tier_by_code(session, code)
+        # --- currencies ---------------------------------------------------- #
+        for code, name, symbol, rate, is_base in currencies:
+            row = (
+                await session.execute(select(Currency).where(Currency.code == code))
+            ).scalar_one_or_none()
+            if row is None:
+                session.add(
+                    Currency(
+                        code=code, name=name, symbol=symbol,
+                        rate_to_base=rate, is_base=is_base,
+                    )
+                )
+        await session.commit()
+
+        # --- tiers ----------------------------------------------------------- #
+        tier_by_name: dict[str, CustomerTier] = {}
+        for name, max_discount in tiers:
+            tier = await catalog_service.get_customer_tier_by_name(session, name)
             if tier is None:
-                tier = await create_customer_tier(
+                tier = await catalog_service.create_customer_tier(
                     session,
-                    CustomerTierCreate(
-                        code=code,
-                        name=name,
-                        max_discount_percent=max_discount,
-                        sort_order=order,
+                    CustomerTierCreate(name=name, max_discount_percent=max_discount),
+                )
+            tier_by_name[name] = tier
+
+        # --- category ceilings ------------------------------------------------ #
+        # "Subscription" is deliberately absent: no row means no ceiling, which
+        # is not the same as a ceiling of zero.
+        for category, max_discount in category_limits:
+            if await catalog_service.get_category_limit(session, category) is None:
+                await catalog_service.create_category_limit(
+                    session,
+                    CategoryLimitCreate(
+                        category=category, max_discount_percent=max_discount
                     ),
                 )
-            else:
-                tier.name = name
-                tier.max_discount_percent = max_discount
-                tier.sort_order = order
-                session.add(tier)
-                await session.commit()
-                tier = await get_customer_tier_by_id(session, tier.id)
-            tier_by_code[code] = tier
 
-        category_by_code: dict[str, ProductCategory] = {}
-        for code, name, max_discount, order in categories:
-            category = await get_product_category_by_code(session, code)
-            if category is None:
-                category = await create_product_category(
-                    session,
-                    ProductCategoryCreate(
-                        code=code,
-                        name=name,
-                        max_discount_percent=max_discount,
-                        sort_order=order,
-                    ),
-                )
-            else:
-                category.name = name
-                category.max_discount_percent = max_discount
-                category.sort_order = order
-                session.add(category)
-                await session.commit()
-                category = await get_product_category_by_code(session, code)
-            category_by_code[code] = category
-
-        product_by_sku: dict[str, Product] = {}
-        for product_data in products:
-            category = category_by_code[product_data["category_code"]]
-            product = await get_product_by_sku(session, product_data["sku"])
-            payload = dict(product_data)
-            payload.pop("category_code")
-            if product is None:
-                product = await create_product(
-                    session,
-                    ProductCreate(
-                        category_id=category.id,
-                        **payload,
-                    ),
-                )
-            else:
-                product.name = product_data["name"]
-                product.category_id = category.id
-                product.list_price = product_data["list_price"]
-                product.unit_cost = product_data["unit_cost"]
-                product.tax_percent = product_data["tax_percent"]
-                product.unit = product_data.get("unit", ProductUnit.EACH)
-                product.is_subscription = product_data.get("is_subscription", False)
-                product.recurring_interval = product_data.get("recurring_interval")
-                session.add(product)
-                await session.commit()
-                product = await get_product_by_sku(session, product_data["sku"])
-            product_by_sku[product_data["sku"]] = product
-
-        default_price_list_id = await _price_list_id_by_name(session, "Default Price List")
-        default_price_list = await get_price_list_by_id(session, default_price_list_id) if default_price_list_id else None
-        if default_price_list is None:
-            default_price_list = await create_price_list(
-                session,
-                PriceListCreate(name="Default Price List", tier_id=None, currency="USD", adjustment_percent=0),
-            )
-
-        for sku, unit_price in [
-            ("LAPTOP-001", 1200),
-            ("MONITOR-001", 300),
-            ("BAG-001", 45),
-            ("INSTALL-001", 150),
-            ("SUPPORT-001", 200),
-            ("ENT-SUB-001", 500),
-        ]:
-            await upsert_price_list_item(
-                session,
-                default_price_list.id,
-                PriceListItemUpsert(product_id=product_by_sku[sku].id, unit_price=unit_price),
-            )
-
+        # --- warehouses -------------------------------------------------------- #
         warehouse_by_code: dict[str, Warehouse] = {}
-        for code, name, address, base_cost, per_unit, weight, order in warehouses:
-            warehouse = await get_warehouse_by_code(session, code)
+        for code, name, address, base_cost, per_unit, weight, priority in warehouses:
+            warehouse = await catalog_service.get_warehouse_by_code(session, code)
             if warehouse is None:
-                warehouse = await create_warehouse(
+                warehouse = await catalog_service.create_warehouse(
                     session,
                     WarehouseCreate(
-                        code=code,
-                        name=name,
-                        address=address,
+                        code=code, name=name, address=address,
                         shipping_base_cost=base_cost,
                         shipping_cost_per_unit=per_unit,
                         shipping_cost_weight=weight,
-                        split_priority=order,
+                        split_priority=priority,
                     ),
                 )
-            else:
-                warehouse.name = name
-                warehouse.address = address
-                warehouse.shipping_base_cost = base_cost
-                warehouse.shipping_cost_per_unit = per_unit
-                warehouse.shipping_cost_weight = weight
-                warehouse.split_priority = order
-                session.add(warehouse)
-                await session.commit()
-                warehouse = await get_warehouse_by_code(session, code)
             warehouse_by_code[code] = warehouse
 
-        stock_rows = [
-            ("CHN", "LAPTOP-001", 3, 0),
-            ("AMD", "LAPTOP-001", 8, 1),
-            ("CHN", "MONITOR-001", 12, 0),
-            ("AMD", "MONITOR-001", 20, 0),
-            ("CHN", "BAG-001", 40, 0),
-            ("AMD", "BAG-001", 60, 0),
-            ("CHN", "INSTALL-001", 0, 0),
-            ("AMD", "INSTALL-001", 0, 0),
-            ("CHN", "SUPPORT-001", 0, 0),
-            ("AMD", "SUPPORT-001", 0, 0),
-            ("CHN", "ENT-SUB-001", 0, 0),
-            ("AMD", "ENT-SUB-001", 0, 0),
-        ]
-        for warehouse_code, sku, quantity_on_hand, quantity_reserved in stock_rows:
-            await upsert_stock_item(
+        # --- products, variants, prices and stock ------------------------------ #
+        for name, category, unit, tax, interval, attributes in products:
+            existing = (
+                await session.execute(select(Product).where(Product.name == name))
+            ).scalar_one_or_none()
+            if existing is not None:
+                continue
+            product = await catalog_service.create_product(
                 session,
-                StockUpsert(
-                    warehouse_id=warehouse_by_code[warehouse_code].id,
-                    product_id=product_by_sku[sku].id,
-                    quantity_on_hand=quantity_on_hand,
-                    quantity_reserved=quantity_reserved,
+                ProductCreate(
+                    name=name,
+                    category=category,
+                    unit=unit,
+                    tax_percent=tax,
+                    is_subscription=interval is not None,
+                    recurring_interval=interval,
+                    has_variants=bool(attributes),
+                    attributes=[
+                        VariantAttributeInput(name=attribute, values=values)
+                        for attribute, values in attributes
+                    ],
                 ),
             )
+            unit_cost, bronze_price = pricing[name]
+            rows = []
+            for index, variant in enumerate(product.variants):
+                # Laptop Pro 14 is deliberately short at Main so the warehouse
+                # split demo has something to split.
+                main_qty = 3 if name == "Laptop Pro 14" else 40
+                east_qty = 8 if name == "Laptop Pro 14" else 25
+                # Services and subscriptions are not stock-tracked at all.
+                stocked = category == "Hardware"
+                rows.append(
+                    VariantRowInput(
+                        id=variant.id,
+                        sku=variant.sku,
+                        unit_cost=unit_cost,
+                        stock=(
+                            [
+                                {
+                                    "warehouse_id": warehouse_by_code["MAIN"].id,
+                                    "quantity_on_hand": main_qty,
+                                },
+                                {
+                                    "warehouse_id": warehouse_by_code["EAST"].id,
+                                    "quantity_on_hand": east_qty,
+                                },
+                            ]
+                            if stocked
+                            else []
+                        ),
+                        prices=[
+                            # One entered cell per tier; the service fans the
+                            # other currency out from the FX rate. Higher tiers
+                            # get the better price.
+                            VariantPriceInput(
+                                tier_id=tier_by_name[tier_name].id,
+                                currency_code="USD",
+                                unit_price=round(
+                                    (bronze_price + index * 30)
+                                    * (1 - discount / 100),
+                                    2,
+                                ),
+                            )
+                            for tier_name, discount in (
+                                ("Bronze", 0), ("Silver", 5), ("Gold", 10)
+                            )
+                        ],
+                    )
+                )
+            await variant_service.save_variant_matrix(session, product, rows)
 
-        customer_rows = [
-            ("Acme Corp", "GOLD", "acme@dealflow360.com"),
-            ("TechWorld", "STANDARD", "procurement@techworld.com"),
-        ]
-        customer_ids: dict[str, uuid.UUID] = {}
-        for name, tier_code, email in customer_rows:
-            result = await session.execute(select(Customer).where(Customer.name == name))
-            customer = result.scalar_one_or_none()
-            if customer is None:
-                customer = await create_customer(
+        # --- customers --------------------------------------------------------- #
+        for name, tier_name, email in customers:
+            existing = (
+                await session.execute(select(Customer).where(Customer.name == name))
+            ).scalar_one_or_none()
+            if existing is None:
+                await catalog_service.create_customer(
                     session,
                     CustomerCreate(
                         name=name,
-                        tier_id=tier_by_code[tier_code].id,
-                        default_price_list_id=default_price_list.id,
+                        tier_id=tier_by_name[tier_name].id,
                         contact_email=email,
                         billing_address=f"{name} HQ",
                     ),
                 )
-            else:
-                customer.tier_id = tier_by_code[tier_code].id
-                customer.default_price_list_id = default_price_list.id
-                customer.contact_email = email
-                customer.billing_address = f"{name} HQ"
-                session.add(customer)
-                await session.commit()
-                customer = await get_customer_by_id(session, customer.id)
-            customer_ids[name] = customer.id
 
+        # --- approval chain ---------------------------------------------------- #
+        # A Sales Rep is never an approver and Admin is never a step. Within
+        # every ceiling nobody approves, which is a rule with ZERO steps rather
+        # than an absent rule - that is what lets an auto-approved quotation
+        # still show up in the approvals list.
         rules = [
-            ("Low Risk Manager Approval", 0, 5, RiskBand.LOW, [Role.SALES_MANAGER]),
-            ("Medium Risk Manager + Finance", 5, 15, RiskBand.MEDIUM, [Role.SALES_MANAGER, Role.FINANCE]),
-            ("High Risk Manager + Finance", 15, None, RiskBand.HIGH, [Role.SALES_MANAGER, Role.FINANCE]),
+            ("Within tier and category limits", 0, 0.01, RiskBand.NONE, []),
+            ("Over limit - Sales Manager", 0.01, 45, RiskBand.MEDIUM, [Role.SALES_MANAGER]),
+            (
+                "Over limit, high risk - Sales Manager then Finance",
+                45, None, RiskBand.HIGH, [Role.SALES_MANAGER, Role.FINANCE],
+            ),
         ]
         for sort_order, (name, min_score, max_score, band, roles) in enumerate(rules, start=1):
-            result = await session.execute(select(ApprovalRule).where(ApprovalRule.risk_band == band))
-            rule = result.scalar_one_or_none()
-            if rule is None:
-                rule = ApprovalRule(
-                    name=name,
-                    min_score=min_score,
-                    max_score=max_score,
-                    risk_band=band,
-                    sort_order=sort_order,
-                    is_active=True,
+            rule = (
+                await session.execute(
+                    select(ApprovalRule).where(ApprovalRule.risk_band == band)
                 )
-                session.add(rule)
-                await session.flush()
-                for step_order, role in enumerate(roles, start=1):
-                    session.add(ApprovalRuleStep(rule_id=rule.id, step_order=step_order, role=role))
+            ).scalar_one_or_none()
+            if rule is not None:
+                continue
+            rule = ApprovalRule(
+                name=name,
+                min_score=min_score,
+                max_score=max_score,
+                risk_band=band,
+                sort_order=sort_order,
+                is_active=True,
+            )
+            session.add(rule)
+            await session.flush()
+            for step_order, role in enumerate(roles, start=1):
+                session.add(
+                    ApprovalRuleStep(rule_id=rule.id, step_order=step_order, role=role)
+                )
         await session.commit()
-
-
-async def _price_list_id_by_name(session, name: str):
-    from sqlalchemy import select
-
-    from app.models.catalog import PriceList
-
-    result = await session.execute(select(PriceList).where(PriceList.name == name))
-    price_list = result.scalar_one_or_none()
-    return price_list.id if price_list else None
 
 
 async def seed_users() -> None:
