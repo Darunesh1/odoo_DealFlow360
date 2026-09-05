@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 import enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import uuid
 from sqlalchemy import (
     Boolean, CheckConstraint, Computed, Date, DateTime, Enum as SAEnum,
@@ -14,6 +14,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from app.models.base import MONEY, PERCENT, POINTS, UNIT_PRICE, TimestampMixin
 from app.models.catalog import RecurringInterval
+
+if TYPE_CHECKING:
+    from app.models.catalog import PriceList, Product, ProductCategory
+    from app.models.customer import Customer, CustomerTier
 
 
 class QuotationStatus(str, enum.Enum):
@@ -69,6 +73,7 @@ class Quotation(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("customers.id", ondelete="RESTRICT"),
         index=True, nullable=False,
     )
+    recipient_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     # SET NULL, not RESTRICT: a rep who owns one quotation must still be
     # deletable, and the snapshot below keeps the pipeline card readable after
     # they are gone.
@@ -130,6 +135,9 @@ class Quotation(Base, TimestampMixin):
     )
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    customer: Mapped["Customer"] = relationship(lazy="selectin")
+    price_list: Mapped[Optional["PriceList"]] = relationship(lazy="selectin")
+    customer_tier: Mapped[Optional["CustomerTier"]] = relationship(lazy="selectin")
     lines: Mapped[list["QuotationLine"]] = relationship(
         back_populates="quotation", cascade="all, delete-orphan", lazy="selectin",
         order_by="QuotationLine.position",
@@ -227,6 +235,10 @@ class QuotationLine(Base, TimestampMixin):
     )
 
     quotation: Mapped["Quotation"] = relationship(back_populates="lines")
+    product: Mapped[Optional["Product"]] = relationship(
+        foreign_keys=[product_id], lazy="selectin"
+    )
+    category: Mapped[Optional["ProductCategory"]] = relationship(lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("quotation_id", "position", name="uq_quotation_line_position"),
