@@ -46,7 +46,7 @@ const ADMINISTRATION: NavItem[] = [
 ]
 
 export function AppSidebar() {
-  const { user } = useAuth()
+  const { isAdmin } = useAuth()
   const { pathname } = useLocation()
 
   const isActive = (item: NavItem) =>
@@ -80,7 +80,7 @@ export function AppSidebar() {
 
       <SidebarContent>
         {renderGroup("Platform", PLATFORM)}
-        {user?.is_superuser && renderGroup("Administration", ADMINISTRATION)}
+        {isAdmin && renderGroup("Administration", ADMINISTRATION)}
 
         <SidebarGroup className="mt-auto">
           <SidebarGroupContent>
@@ -93,7 +93,7 @@ export function AppSidebar() {
                   </a>
                 </SidebarMenuButton>
               </SidebarMenuItem>
-              {user?.is_superuser && (
+              {isAdmin && (
                 <SidebarMenuItem>
                   <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
                     <ShieldCheckIcon className="size-3.5 text-brass" />

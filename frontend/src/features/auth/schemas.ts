@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { ROLES } from "@/types/api"
+
 /** Mirrors the backend rule in backend/app/schemas/user.py: 8+ chars, a letter and a digit. */
 export const passwordSchema = z
   .string()
@@ -15,14 +17,20 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Enter your password"),
 })
 
-export const registerSchema = z
+/** Admins create accounts; there is no public signup. */
+export const inviteUserSchema = z.object({
+  full_name: z.string().min(1, "Enter their name").max(255),
+  email: emailSchema,
+  roles: z.array(z.enum(ROLES)).min(1, "Pick at least one role"),
+})
+
+/** The invitee sets their first password from the emailed link. */
+export const acceptInviteSchema = z
   .object({
-    full_name: z.string().min(1, "Enter your name").max(255),
-    email: emailSchema,
-    password: passwordSchema,
+    new_password: passwordSchema,
     confirm_password: z.string(),
   })
-  .refine((values) => values.password === values.confirm_password, {
+  .refine((values) => values.new_password === values.confirm_password, {
     message: "Passwords do not match",
     path: ["confirm_password"],
   })
@@ -60,7 +68,8 @@ export const profileSchema = z.object({
 })
 
 export type LoginValues = z.infer<typeof loginSchema>
-export type RegisterValues = z.infer<typeof registerSchema>
+export type InviteUserValues = z.infer<typeof inviteUserSchema>
+export type AcceptInviteValues = z.infer<typeof acceptInviteSchema>
 export type ForgotPasswordValues = z.infer<typeof forgotPasswordSchema>
 export type ResetPasswordValues = z.infer<typeof resetPasswordSchema>
 export type ChangePasswordValues = z.infer<typeof changePasswordSchema>

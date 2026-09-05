@@ -2,7 +2,9 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
+  MailIcon,
   MoreHorizontalIcon,
+  PlusIcon,
   SearchIcon,
   ShieldIcon,
   Trash2Icon,
@@ -14,6 +16,7 @@ import { toast } from "sonner"
 
 import { initialsFor } from "@/components/nav-user"
 import { PageHeader } from "@/components/page-header"
+import { RoleBadges, RolePicker } from "@/components/role-picker"
 import {
   AlertDialog,
   AlertDialogAction,
@@ -35,7 +38,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
   Table,
@@ -47,7 +59,7 @@ import {
 } from "@/components/ui/table"
 import { useAuth } from "@/features/auth/use-auth"
 import { api, errorMessage } from "@/lib/api"
-import type { Page, User } from "@/types/api"
+import type { Message, Page, Role, User } from "@/types/api"
 
 const PAGE_SIZE = 10
 
@@ -65,6 +77,8 @@ export default function AdminUsersPage() {
   const [search, setSearch] = useState("")
   const [page, setPage] = useState(1)
   const [pendingDelete, setPendingDelete] = useState<User | null>(null)
+  const [inviting, setInviting] = useState(false)
+  const [editingRoles, setEditingRoles] = useState<User | null>(null)
 
   // Debounce so typing does not fire a request per keystroke.
   useEffect(() => {
@@ -100,17 +114,37 @@ export default function AdminUsersPage() {
     onError: (caught) => toast.error(errorMessage(caught, "Could not update the account.")),
   })
 
-  const setSuperuser = useMutation({
-    mutationFn: async ({ id, isSuperuser }: { id: string; isSuperuser: boolean }) => {
-      await api.patch(`/admin/users/${id}`, { is_superuser: isSuperuser })
+  const inviteUser = useMutation({
+    mutationFn: async (body: { email: string; full_name: string; roles: Role[] }) => {
+      await api.post("/admin/users", body)
     },
-    onSuccess: async (_result, variables) => {
+    onSuccess: async () => {
       await invalidate()
-      toast.success(
-        variables.isSuperuser ? "Administrator access granted." : "Administrator access removed."
-      )
+      setInviting(false)
+      toast.success("Invitation sent. They will set their own password.")
     },
-    onError: (caught) => toast.error(errorMessage(caught, "Could not update the role.")),
+    onError: (caught) => toast.error(errorMessage(caught, "Could not create that user.")),
+  })
+
+  const setRoles = useMutation({
+    mutationFn: async ({ id, roles }: { id: string; roles: Role[] }) => {
+      await api.patch(`/admin/users/${id}`, { roles })
+    },
+    onSuccess: async () => {
+      await invalidate()
+      setEditingRoles(null)
+      toast.success("Roles updated.")
+    },
+    onError: (caught) => toast.error(errorMessage(caught, "Could not update their roles.")),
+  })
+
+  const resendInvite = useMutation({
+    mutationFn: async (id: string) => {
+      const { data } = await api.post<Message>(`/admin/users/${id}/resend-invite`)
+      return data
+    },
+    onSuccess: (data) => toast.success(data.message),
+    onError: (caught) => toast.error(errorMessage(caught, "Could not resend the invitation.")),
   })
 
   const remove = useMutation({
@@ -134,18 +168,24 @@ export default function AdminUsersPage() {
       <PageHeader
         eyebrow="Administration"
         title="Users"
-        description="Every account on this deployment. Only administrators can see this page."
+        description="Every account on this deployment. There is no public signup, so accounts start here."
       />
 
-      <div className="relative max-w-sm">
-        <SearchIcon className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={searchInput}
-          onChange={(event) => setSearchInput(event.target.value)}
-          placeholder="Search by name or email"
-          className="pl-9"
-          aria-label="Search users"
-        />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="relative w-full max-w-sm">
+          <SearchIcon className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={searchInput}
+            onChange={(event) => setSearchInput(event.target.value)}
+            placeholder="Search by name or email"
+            className="pl-9"
+            aria-label="Search users"
+          />
+        </div>
+        <Button onClick={() => setInviting(true)}>
+          <PlusIcon className="size-4" />
+          Invite user
+        </Button>
       </div>
 
       <Card className="overflow-hidden py-0">
@@ -154,7 +194,7 @@ export default function AdminUsersPage() {
             <TableHeader>
               <TableRow className="hover:bg-transparent">
                 <TableHead>User</TableHead>
-                <TableHead className="hidden sm:table-cell">Role</TableHead>
+                <TableHead className="hidden sm:table-cell">Roles</TableHead>
                 <TableHead className="hidden sm:table-cell">Status</TableHead>
                 <TableHead className="hidden md:table-cell">Joined</TableHead>
                 <TableHead className="w-12" />
@@ -214,14 +254,7 @@ export default function AdminUsersPage() {
                       </div>
                     </TableCell>
                     <TableCell className="hidden sm:table-cell">
-                      {user.is_superuser ? (
-                        <Badge variant="outline" className="gap-1 text-brass">
-                          <ShieldIcon className="size-3" />
-                          Admin
-                        </Badge>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">Member</span>
-                      )}
+                      <RoleBadges roles={user.roles} />
                     </TableCell>
                     <TableCell className="hidden sm:table-cell">
                       {!user.is_active ? (
@@ -267,17 +300,18 @@ export default function AdminUsersPage() {
                               </>
                             )}
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() =>
-                              setSuperuser.mutate({
-                                id: user.id,
-                                isSuperuser: !user.is_superuser,
-                              })
-                            }
-                          >
+                          <DropdownMenuItem onClick={() => setEditingRoles(user)}>
                             <ShieldIcon className="size-4" />
-                            {user.is_superuser ? "Remove admin access" : "Make administrator"}
+                            Manage roles
                           </DropdownMenuItem>
+                          {!user.is_verified && (
+                            <DropdownMenuItem
+                              onClick={() => resendInvite.mutate(user.id)}
+                            >
+                              <MailIcon className="size-4" />
+                              Resend invitation
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuSeparator />
                           <DropdownMenuItem
                             variant="destructive"
@@ -346,6 +380,132 @@ export default function AdminUsersPage() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Mounted only while open, so each one opens from a clean slate
+          without an effect resetting it. */}
+      {inviting && (
+        <InviteDialog
+          onClose={() => setInviting(false)}
+          pending={inviteUser.isPending}
+          onSubmit={(body) => inviteUser.mutate(body)}
+        />
+      )}
+
+      {editingRoles && (
+        <RolesDialog
+          user={editingRoles}
+          onClose={() => setEditingRoles(null)}
+          pending={setRoles.isPending}
+          onSubmit={(roles) => setRoles.mutate({ id: editingRoles.id, roles })}
+        />
+      )}
     </>
+  )
+}
+
+/** Creates an account and emails its owner a link to set their own password. */
+function InviteDialog({
+  onClose,
+  pending,
+  onSubmit,
+}: {
+  onClose: () => void
+  pending: boolean
+  onSubmit: (body: { email: string; full_name: string; roles: Role[] }) => void
+}) {
+  const [fullName, setFullName] = useState("")
+  const [email, setEmail] = useState("")
+  const [roles, setRoles] = useState<Role[]>([])
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Invite a user</DialogTitle>
+          <DialogDescription>
+            They receive an email with a link to choose their own password. Until they
+            use it, the account cannot be signed into.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="invite-name">Full name</Label>
+            <Input
+              id="invite-name"
+              value={fullName}
+              onChange={(event) => setFullName(event.target.value)}
+              placeholder="Riya Sharma"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="invite-email">Email</Label>
+            <Input
+              id="invite-email"
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="riya@company.com"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Roles</Label>
+            <RolePicker value={roles} onChange={setRoles} idPrefix="invite" />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => onSubmit({ email, full_name: fullName, roles })}
+            disabled={pending || !email.trim() || !fullName.trim() || roles.length === 0}
+          >
+            {pending ? "Sending…" : "Send invitation"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Replaces a user's roles wholesale, matching how the API treats the field. */
+function RolesDialog({
+  user,
+  onClose,
+  pending,
+  onSubmit,
+}: {
+  user: User
+  onClose: () => void
+  pending: boolean
+  onSubmit: (roles: Role[]) => void
+}) {
+  const [roles, setRoles] = useState<Role[]>(user.roles)
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Roles for {user.full_name || user.email}</DialogTitle>
+          <DialogDescription>
+            Roles are additive: someone can approve as a Sales Manager and handle
+            Finance decisions at the same time.
+          </DialogDescription>
+        </DialogHeader>
+
+        <RolePicker value={roles} onChange={setRoles} idPrefix="edit" />
+
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={() => onSubmit(roles)} disabled={pending || roles.length === 0}>
+            {pending ? "Saving…" : "Save roles"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

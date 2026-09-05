@@ -2,6 +2,7 @@ import type { ReactNode } from "react"
 import { Navigate, useLocation } from "react-router-dom"
 
 import { useAuth } from "@/features/auth/use-auth"
+import type { Role } from "@/types/api"
 import { DealFlowMark } from "@/components/brand"
 
 function Resolving() {
@@ -34,12 +35,21 @@ export function RequireGuest({ children }: { children: ReactNode }) {
   return <>{children}</>
 }
 
-/** Admin-only routes. Sends non-admins back to the dashboard rather than to login. */
-export function RequireAdmin({ children }: { children: ReactNode }) {
-  const { user, isAuthenticated, isBootstrapping } = useAuth()
+/**
+ * Restricts a route to holders of at least one of `roles`. Roles are additive,
+ * so someone who is both a Sales Manager and Finance satisfies either guard.
+ * Sends the unauthorized back to the dashboard rather than to login.
+ */
+export function RequireRole({ roles, children }: { roles: Role[]; children: ReactNode }) {
+  const { isAuthenticated, isBootstrapping, hasRole } = useAuth()
 
   if (isBootstrapping) return <Resolving />
   if (!isAuthenticated) return <Navigate to="/login" replace />
-  if (!user?.is_superuser) return <Navigate to="/app" replace />
+  if (!hasRole(...roles)) return <Navigate to="/app" replace />
   return <>{children}</>
+}
+
+/** Admin-only routes. */
+export function RequireAdmin({ children }: { children: ReactNode }) {
+  return <RequireRole roles={["admin"]}>{children}</RequireRole>
 }
