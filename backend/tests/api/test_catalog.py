@@ -83,7 +83,16 @@ async def test_tier_prices_are_calculated_from_cost_and_price(db_session):
     await variant_service.save_variant_matrix(
         db_session,
         product,
-        [VariantRowInput(id=variant.id, sku=variant.sku, unit_cost=700, base_price=1000)],
+        [
+            VariantRowInput(
+                id=variant.id,
+                sku=variant.sku,
+                unit_cost=700,
+                base_price=1000,
+                # A plan is capped rather than stocked, and the cap is required.
+                available_quantity=50,
+            )
+        ],
     )
 
     prices = await _prices(db_session, variant.id)
@@ -232,3 +241,97 @@ async def test_finance_manages_warehouses(client, db_session, mock_emails):
     )
     assert created.status_code == 201
     assert (await client.get(f"{API}/admin/warehouses", headers=finance)).status_code == 200
+
+
+async def test_the_subscription_category_is_set_by_the_toggle(db_session):
+    """The toggle is the only place subscription-ness is declared."""
+    await _currencies(db_session)
+
+    plan = await catalog_service.create_product(
+        db_session,
+        ProductCreate(
+            name="Support SLA",
+            # Deliberately wrong: the service overrides it.
+            category="Services",
+            is_subscription=True,
+            recurring_interval="quarterly",
+        ),
+    )
+    assert plan.category == "Subscription"
+
+    # And the reverse: the name is refused on a product whose toggle is off.
+    with pytest.raises(ValueError, match="Only a subscription product"):
+        await catalog_service.create_product(
+            db_session,
+            ProductCreate(name="Sneaky", category="Subscription"),
+        )
+
+    # It is never suggested either, so nobody is invited to type it.
+    assert "Subscription" not in await catalog_service.list_categories(db_session)
+
+
+async def test_a_plan_cannot_be_sold_beyond_its_capacity(db_session):
+    """A plan has no warehouse, so its limit is a capacity, checked at entry."""
+    from datetime import date, timedelta
+
+    from app.models.customer import Customer
+    from app.schemas.quotation import QuotationCreate, QuotationLineCreate
+    from app.services import quotation_service
+    from tests.conftest import make_user
+
+    await _currencies(db_session)
+    tier = await _tier(db_session, "Bronze", 5)
+
+    plan = await catalog_service.create_product(
+        db_session,
+        ProductCreate(
+            name="Care Plan",
+            category="Subscription",
+            is_subscription=True,
+            recurring_interval="monthly",
+        ),
+    )
+    variant = plan.variants[0]
+    await variant_service.save_variant_matrix(
+        db_session,
+        plan,
+        [
+            VariantRowInput(
+                id=variant.id,
+                sku=variant.sku,
+                unit_cost=18,
+                base_price=46,
+                available_quantity=10,
+            )
+        ],
+    )
+
+    customer = Customer(name="Acme Corp", tier_id=tier.id)
+    db_session.add(customer)
+    await db_session.commit()
+    rep = await make_user(db_session, "rep-cap@example.com")
+
+    quotation = await quotation_service.create_draft_quotation(
+        db_session,
+        owner=rep,
+        obj_in=QuotationCreate(
+            customer_id=customer.id,
+            currency="USD",
+            requested_delivery_date=date.today() + timedelta(days=7),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="only 10 of 10 licences"):
+        await quotation_service.add_line(
+            db_session,
+            quotation,
+            QuotationLineCreate(variant_id=variant.id, quantity=11),
+        )
+
+    # Inside the cap it goes on without complaint.
+    quotation = await quotation_service.add_line(
+        db_session,
+        quotation,
+        QuotationLineCreate(variant_id=variant.id, quantity=10),
+    )
+    assert quotation.lines[0].quantity == 10

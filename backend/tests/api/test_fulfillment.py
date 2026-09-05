@@ -297,3 +297,75 @@ async def test_accepting_a_split_promises_a_date_we_can_keep(db_session):
     refreshed = await db_session.get(Quotation, quotation.id)
     assert refreshed.promised_delivery_date == restock
     assert refreshed.promised_delivery_date > refreshed.requested_delivery_date
+
+
+async def test_approval_plans_the_split_without_a_confirm(db_session):
+    """The order should appear under "awaiting fulfillment" on approval alone."""
+    from app.models.approval import ApprovalRule, ApprovalTrigger
+    from app.models.quotation import QuotationStatus, RiskBand
+    from app.services import approval_service, fulfillment_service as fs
+    from tests.conftest import make_user
+
+    product, variant, _, _ = await _catalog(db_session)
+    quotation = await _order(db_session, product, variant, 6)
+    # Back to draft so open_round can approve it the way a submission would.
+    quotation.status = QuotationStatus.DRAFT
+    db_session.add(quotation)
+    db_session.add(
+        ApprovalRule(
+            name="Within limits",
+            min_score=0,
+            max_score=0.01,
+            risk_band=RiskBand.NONE,
+            sort_order=1,
+            is_active=True,
+            steps=[],
+        )
+    )
+    await db_session.commit()
+
+    rep = await make_user(db_session, "rep-plan@example.com", roles=(Role.SALES_REP,))
+    await approval_service.open_round(
+        db_session,
+        quotation=quotation,
+        submitted_by=rep,
+        trigger=ApprovalTrigger.REP_SUBMIT,
+    )
+    await db_session.commit()
+    assert quotation.status == QuotationStatus.APPROVED
+
+    await approval_service.plan_if_approved(db_session, quotation, rep)
+
+    fulfillment = await fs.get_for_quotation(db_session, quotation.id)
+    assert fulfillment is not None
+    assert len(fulfillment.allocations) > 0
+    # Planned, not reserved - accepting is still Finance's decision.
+    assert fulfillment.accepted_at is None
+    assert all(a.status == AllocationStatus.PLANNED for a in fulfillment.allocations)
+
+
+async def test_confirming_after_approval_still_writes_history(db_session):
+    """Confirm used to bail out early when a fulfillment already existed."""
+    from sqlalchemy import func, select
+
+    from app.models.analytics import SalesRecord
+    from app.services import order_service
+
+    product, variant, _, _ = await _catalog(db_session)
+    quotation = await _order(db_session, product, variant, 6)
+
+    planned = await order_service.plan_fulfillment(db_session, quotation=quotation)
+    assert planned is not None
+
+    fulfillment = await order_service.confirm_quotation(db_session, quotation=quotation)
+    # Reuses the fulfillment approval already made...
+    assert fulfillment.id == planned.id
+    # ...and still writes the sales history it would otherwise have skipped.
+    records = (
+        await db_session.execute(
+            select(func.count()).select_from(SalesRecord).where(
+                SalesRecord.quotation_id == quotation.id
+            )
+        )
+    ).scalar_one()
+    assert records == len(quotation.lines)

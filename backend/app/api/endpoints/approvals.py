@@ -233,6 +233,11 @@ async def decide_approval(
         )
     await db.commit()
 
+    # After the commit, in this order: plan the split so the order appears
+    # under "Orders awaiting fulfillment" the moment it is approved, then tell
+    # people. A rolled-back decision must have done neither.
+    await approval_service.plan_if_approved(db, quotation, current_user)
+
     from app.services.approval_notifications import notify_decision
 
     await notify_decision(db, approval=approval, quotation=quotation, actor=current_user)

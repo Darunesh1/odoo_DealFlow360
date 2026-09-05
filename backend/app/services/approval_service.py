@@ -32,9 +32,13 @@ from app.models.approval import (
 )
 from app.core import cache
 from app.models.analytics import AuditAction
+import logging
+
 from app.models.quotation import Quotation, QuotationStatus, RiskBand
 from app.models.user import Role, User
 from app.services import audit_service
+
+logger = logging.getLogger(__name__)
 
 
 async def list_rules(db: AsyncSession) -> Sequence[ApprovalRule]:
@@ -170,6 +174,30 @@ async def open_round(
     quotation.last_activity_at = now
     db.add(quotation)
     return approval
+
+
+async def plan_if_approved(
+    db: AsyncSession, quotation: Quotation, user: Optional[User] = None
+) -> None:
+    """Works out the warehouse split the moment a quotation is approved.
+
+    Imported here rather than at module scope because order_service imports
+    this module for its routing; the cycle is real and the local import is the
+    cheapest way through it.
+
+    Failures are swallowed on purpose. A missing warehouse or an unstocked SKU
+    must not undo an approval that has already been decided and emailed - the
+    split can be re-planned, an approval cannot be un-decided.
+    """
+    if quotation.status != QuotationStatus.APPROVED:
+        return
+
+    from app.services import order_service
+
+    try:
+        await order_service.plan_fulfillment(db, quotation=quotation, user=user)
+    except Exception as exc:  # noqa: BLE001 - see docstring
+        logger.warning(f"Could not plan the split for {quotation.number}: {exc}")
 
 
 async def load_approval(db: AsyncSession, approval_id: uuid.UUID) -> Optional[Approval]:

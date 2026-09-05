@@ -61,17 +61,64 @@ def _leap(year: int) -> bool:
     return year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
 
 
+async def plan_fulfillment(
+    db: AsyncSession, *, quotation: Quotation, user: Optional[User] = None
+) -> Optional[Fulfillment]:
+    """Works out which warehouses would cover this order, and books nothing.
+
+    Called the moment a quotation reaches APPROVED - by a chain of approvers or
+    by auto-approval - so the order shows up under "Orders awaiting
+    fulfillment" without anyone having to go looking for it.
+
+    It deliberately stops short of reserving stock. Accepting the split is
+    Finance's decision, and reserving here would make that click meaningless.
+
+    Re-planning an accepted split is refused rather than silently ignored:
+    stock is already held against those allocations, and quietly replacing them
+    would leak the reservation.
+    """
+    async with with_lock(f"plan:{quotation.id}", ttl=60):
+        existing = await fulfillment_service.get_for_quotation(db, quotation.id)
+        if existing is not None and existing.accepted_at is not None:
+            return existing
+
+        fulfillment = existing
+        if fulfillment is None:
+            fulfillment = Fulfillment(
+                quotation_id=quotation.id,
+                requested_delivery_date=quotation.requested_delivery_date,
+            )
+            db.add(fulfillment)
+        else:
+            # A re-plan after accepted terms changed; keep the row, replace the
+            # allocations.
+            fulfillment.requested_delivery_date = quotation.requested_delivery_date
+
+        await fulfillment_service.plan_split(
+            db, fulfillment=fulfillment, quotation=quotation
+        )
+        await db.commit()
+
+    await cache.bump(cache.NS_DASHBOARD)
+    return await fulfillment_service.get_for_quotation(db, quotation.id)
+
+
 async def confirm_quotation(
     db: AsyncSession, *, quotation: Quotation, user: Optional[User] = None
 ) -> Fulfillment:
     """Turns an approved quotation into an order.
 
     Refuses anything not APPROVED: confirming a quote that is still with
-    Finance would reserve stock against a discount nobody signed off.
+    Finance would commit stock against a discount nobody signed off.
+
+    Idempotency keys on the QUOTATION'S STATUS, not on whether a fulfillment
+    exists - approval now plans one before anybody confirms, so "a fulfillment
+    is present" would return early and silently skip the sales history and the
+    subscriptions.
     """
     if quotation.status == QuotationStatus.CONFIRMED:
-        # Idempotent rather than an error: a double-clicked Confirm should land
-        # the user on the split they just created, not on a red banner.
+        # A double-clicked Confirm should land on the split it just made, not
+        # on a red banner.
         existing = await fulfillment_service.get_for_quotation(db, quotation.id)
         if existing is not None:
             return existing
@@ -79,11 +126,13 @@ async def confirm_quotation(
         raise ValueError("Only an approved quotation can be confirmed")
 
     async with with_lock(f"confirm:{quotation.id}", ttl=60):
-        # Re-check inside the lock: the loser of a double-click race must see
-        # the winner's write, not the state it read before waiting.
-        existing = await fulfillment_service.get_for_quotation(db, quotation.id)
-        if existing is not None:
-            return existing
+        # Re-read inside the lock: the loser of a race must see the winner's
+        # write, not the state it read before waiting.
+        await db.refresh(quotation)
+        if quotation.status == QuotationStatus.CONFIRMED:
+            existing = await fulfillment_service.get_for_quotation(db, quotation.id)
+            if existing is not None:
+                return existing
 
         now = datetime.now(timezone.utc)
         today = date.today()
@@ -98,19 +147,20 @@ async def confirm_quotation(
             if line.is_recurring and line.recurring_interval:
                 _open_subscription(db, quotation=quotation, line=line, start=today)
 
-        fulfillment = Fulfillment(
-            quotation_id=quotation.id,
-            requested_delivery_date=quotation.requested_delivery_date,
-        )
-        db.add(fulfillment)
-        # Planned BEFORE the flush, deliberately. A flush makes the row
-        # persistent without marking its collections loaded, so reading
-        # fulfillment.allocations afterwards emits a lazy load - which under
-        # asyncpg is a MissingGreenlet rather than a query. While it is still
-        # pending the collection is the empty list it was constructed with.
-        await fulfillment_service.plan_split(
-            db, fulfillment=fulfillment, quotation=quotation
-        )
+        fulfillment = await fulfillment_service.get_for_quotation(db, quotation.id)
+        if fulfillment is None:
+            fulfillment = Fulfillment(
+                quotation_id=quotation.id,
+                requested_delivery_date=quotation.requested_delivery_date,
+            )
+            db.add(fulfillment)
+            # Planned BEFORE the flush, deliberately. A flush makes the row
+            # persistent without marking its collections loaded, so reading
+            # fulfillment.allocations afterwards emits a lazy load - which
+            # under asyncpg is a MissingGreenlet rather than a query.
+            await fulfillment_service.plan_split(
+                db, fulfillment=fulfillment, quotation=quotation
+            )
 
         audit_service.record(
             db,

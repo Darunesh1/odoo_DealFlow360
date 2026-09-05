@@ -673,6 +673,11 @@ async def submit_quotation(
 
     # After the commit, never before: a rolled-back submission must not have
     # already told a manager that something is waiting on them.
+    #
+    # A quotation inside every ceiling is approved by this point, so its split
+    # is planned here rather than waiting for someone to press Confirm.
+    await approval_service.plan_if_approved(db, quotation, submitted_by)
+
     from app.services.approval_notifications import notify_submitted
 
     await notify_submitted(db, approval=approval, quotation=quotation)

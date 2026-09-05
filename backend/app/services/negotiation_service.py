@@ -196,6 +196,12 @@ async def accept_change_request(
         },
     )
     await db.commit()
+
+    # The quantities and the discount just moved, so any split planned against
+    # the old terms is stale. Re-planned if it has not been accepted yet;
+    # refused if it has, because stock is already held against it.
+    await approval_service.plan_if_approved(db, quotation, user)
+
     return await quotation_service.ensure_quotation_loaded(db, quotation.id), approval
 
 

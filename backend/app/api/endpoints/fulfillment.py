@@ -254,6 +254,11 @@ async def confirm_quotation(
 ) -> Any:
     """Turns an approved quotation into an order and plans its split."""
     quotation = await ensure_quotation_loaded(db, quotation_id)
+    # The same ownership rule GET /fulfillments applies. Without it any rep
+    # could confirm any other rep's approved deal by id.
+    if not current_user.has_role(Role.ADMIN, Role.FINANCE, Role.SALES_MANAGER):
+        if quotation.owner_id != current_user.id:
+            raise _missing()
     try:
         fulfillment = await order_service.confirm_quotation(
             db, quotation=quotation, user=current_user
