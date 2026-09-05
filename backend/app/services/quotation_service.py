@@ -6,7 +6,7 @@ import secrets
 from typing import Optional, Sequence
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -143,6 +143,127 @@ async def list_quotations(db: AsyncSession) -> Sequence[Quotation]:
     stmt = select(Quotation).order_by(Quotation.updated_at.desc())
     result = await db.execute(stmt)
     return list(result.scalars().all())
+
+
+_SORT_COLUMNS = {
+    "number": Quotation.number,
+    "customer": Customer.name,
+    "total": Quotation.total,
+    "status": Quotation.status,
+    "risk": Quotation.blended_risk_score,
+    "updated": Quotation.updated_at,
+}
+
+
+def _visible_to(stmt, viewer: User):
+    """A rep sees their own deals; managers, finance and admin see everything.
+
+    Applied in the query rather than filtered afterwards, so the row count and
+    the pagination stay honest.
+    """
+    if viewer.has_role(Role.ADMIN, Role.SALES_MANAGER, Role.FINANCE):
+        return stmt
+    return stmt.where(Quotation.owner_id == viewer.id)
+
+
+async def stage_counts(db: AsyncSession, viewer: User) -> dict[str, int]:
+    """One grouped query behind every stage chip and Kanban column header."""
+    stmt = _visible_to(
+        select(Quotation.status, func.count()).select_from(Quotation), viewer
+    ).group_by(Quotation.status)
+    rows = (await db.execute(stmt)).all()
+    counts = {status.value: 0 for status in QuotationStatus}
+    for status, count in rows:
+        counts[status.value] = int(count)
+    return counts
+
+
+async def search_quotations(
+    db: AsyncSession,
+    *,
+    viewer: User,
+    skip: int,
+    limit: int,
+    search: Optional[str] = None,
+    status: Optional[QuotationStatus] = None,
+    sort: str = "updated",
+    order: str = "desc",
+) -> tuple[Sequence[Quotation], int]:
+    """The quotations list, paginated server-side.
+
+    Joins the customer once so a search can match the company name and the
+    sort can order by it, rather than loading every quotation to filter in
+    Python.
+    """
+    base = _visible_to(select(Quotation).join(Customer, Quotation.customer_id == Customer.id), viewer)
+
+    if status is not None:
+        base = base.where(Quotation.status == status)
+    if search:
+        needle = f"%{search.strip()}%"
+        base = base.where(
+            or_(Quotation.number.ilike(needle), Customer.name.ilike(needle))
+        )
+
+    total = (
+        await db.execute(
+            select(func.count()).select_from(base.with_only_columns(Quotation.id).subquery())
+        )
+    ).scalar_one()
+
+    column = _SORT_COLUMNS.get(sort, Quotation.updated_at)
+    direction = column.asc() if order == "asc" else column.desc()
+    # Number as the tiebreak so two quotations updated in the same millisecond
+    # do not swap places between pages and hide a row.
+    stmt = base.order_by(direction, Quotation.number.desc()).offset(skip).limit(limit)
+
+    return list((await db.execute(stmt)).scalars().all()), int(total)
+
+
+async def reload_quotation(db: AsyncSession, quotation: Quotation) -> Quotation:
+    """The workspace's "Reload Data" action.
+
+    Re-snapshots stock and re-runs the pricing and ceiling calculation from
+    live catalog data. **Draft only**: nearly every column on a quotation line
+    is a snapshot precisely so that an admin raising a ceiling while a quote
+    sits with Finance cannot make the "Why This Quote Was Flagged" screen
+    re-render as "OK".
+    """
+    if quotation.status != QuotationStatus.DRAFT:
+        raise ValueError("Only a draft can be reloaded from the catalog")
+
+    for line in quotation.lines:
+        if not line.variant_id:
+            continue
+        (
+            warehouse_id,
+            warehouse_name,
+            warehouse_code,
+            bin_location,
+            available,
+        ) = await _allocate_stock_line(
+            db, variant_id=line.variant_id, quantity=line.quantity
+        )
+        _apply_stock_snapshot(
+            line,
+            warehouse_id=warehouse_id,
+            warehouse_name=warehouse_name,
+            warehouse_code=warehouse_code,
+            warehouse_bin_location=bin_location,
+            stock_available_at_entry=available,
+        )
+        db.add(line)
+
+    quotation.last_activity_at = datetime.now(timezone.utc)
+    return await recalculate_quotation(db, quotation)
+
+
+async def delete_quotation(db: AsyncSession, quotation: Quotation) -> None:
+    """Drafts only. Anything that has been submitted is part of an audit trail."""
+    if quotation.status != QuotationStatus.DRAFT:
+        raise ValueError("Only a draft quotation can be deleted")
+    await db.delete(quotation)
+    await db.commit()
 
 
 async def create_draft_quotation(

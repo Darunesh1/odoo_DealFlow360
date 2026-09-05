@@ -18,6 +18,7 @@ from app.services import (
     approval_service,
     audit_service,
     pricing_service,
+    upsell_service,
     variant_service,
 )
 from app.services.catalog_service import (
@@ -66,11 +67,15 @@ from app.services.catalog_service import (
 )
 from app.services.quotation_service import (
     add_line,
+    delete_quotation,
     create_draft_quotation,
     ensure_quotation_loaded,
     list_quotations,
     recalculate_quotation,
+    reload_quotation,
     remove_line,
+    search_quotations,
+    stage_counts,
     submit_quotation,
     sync_customer_portal_email,
     update_line,

@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import enum
 from typing import List, Optional
 import uuid
 
@@ -8,6 +9,7 @@ from app.models.catalog import ProductUnit, RecurringInterval
 from app.models.approval import ApprovalStatus, ApprovalTrigger
 from app.models.quotation import LineSource, QuotationStatus, RiskBand
 from app.schemas.approval import ApprovalRead
+from app.schemas.common import Page
 from app.schemas.customer import CustomerRead, CustomerTierRead
 
 
@@ -110,6 +112,75 @@ class QuotationRead(QuotationBase):
     customer_tier: Optional[CustomerTierRead] = None
     lines: List[QuotationLineRead] = Field(default_factory=list)
     approval: Optional[ApprovalRead] = None
+
+
+class QuotationSort(str, enum.Enum):
+    NUMBER = "number"
+    CUSTOMER = "customer"
+    TOTAL = "total"
+    STATUS = "status"
+    RISK = "risk"
+    UPDATED = "updated"
+
+
+class QuotationListRow(BaseModel):
+    """One card, or one table row, on the quotations list (screen 3)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    number: str
+    customer_id: uuid.UUID
+    customer_name: str
+    customer_tier: Optional[str] = None
+    owner_name: Optional[str] = None
+    status: QuotationStatus
+    currency: str
+    total: float
+    margin_total: float
+    line_count: int = 0
+    risk_band: RiskBand = RiskBand.NONE
+    blended_risk_score: float = 0
+    requires_approval: bool = False
+    valid_until: Optional[date] = None
+    last_activity_at: Optional[datetime] = None
+    updated_at: datetime
+
+
+class QuotationStageCounts(BaseModel):
+    """The stage chips above the list, and the Kanban column headers."""
+
+    draft: int = 0
+    pending_approval: int = 0
+    approved: int = 0
+    negotiation: int = 0
+    confirmed: int = 0
+    rejected: int = 0
+    cancelled: int = 0
+
+
+class QuotationListPage(Page[QuotationListRow]):
+    """A page of rows plus the counts, so the chips do not need a second call."""
+
+    counts: QuotationStageCounts
+
+
+class UpsellSuggestion(BaseModel):
+    """One card in the upsell panel (spec B5)."""
+
+    product_id: uuid.UUID
+    variant_id: uuid.UUID
+    name: str
+    category: str
+    sku: str
+    unit_price: float
+    unit_cost: float
+    margin_delta: float
+    margin_percent: float
+    is_promoted: bool
+    promotion_label: Optional[str] = None
+    is_recurring: bool
+    reason: str
 
 
 class QuotationCreate(BaseModel):
