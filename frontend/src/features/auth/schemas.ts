@@ -17,7 +17,24 @@ export const loginSchema = z.object({
   password: z.string().min(1, "Enter your password"),
 })
 
-/** Admins create accounts; there is no public signup. */
+/**
+ * Public sign-up. Everyone who registers becomes a customer - the backend
+ * forces the role, and there is no field here that could ask for another.
+ */
+export const signupSchema = z
+  .object({
+    full_name: z.string().min(1, "Enter your name").max(255),
+    company_name: z.string().max(255).optional(),
+    email: emailSchema,
+    password: passwordSchema,
+    confirm_password: z.string(),
+  })
+  .refine((values) => values.password === values.confirm_password, {
+    message: "Passwords do not match",
+    path: ["confirm_password"],
+  })
+
+/** Admins create internal accounts; only customers can sign themselves up. */
 export const inviteUserSchema = z.object({
   full_name: z.string().min(1, "Enter their name").max(255),
   email: emailSchema,
@@ -68,6 +85,7 @@ export const profileSchema = z.object({
 })
 
 export type LoginValues = z.infer<typeof loginSchema>
+export type SignupValues = z.infer<typeof signupSchema>
 export type InviteUserValues = z.infer<typeof inviteUserSchema>
 export type AcceptInviteValues = z.infer<typeof acceptInviteSchema>
 export type ForgotPasswordValues = z.infer<typeof forgotPasswordSchema>

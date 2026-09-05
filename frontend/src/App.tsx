@@ -18,6 +18,7 @@ import { DealFlowMark } from "@/components/brand";
 // for the sidebar, the data table and the dialogs behind the sign-in wall.
 const LandingPage = lazy(() => import("@/pages/landing"));
 const LoginPage = lazy(() => import("@/pages/auth/login"));
+const SignupPage = lazy(() => import("@/pages/auth/signup"));
 const AcceptInvitePage = lazy(() => import("@/pages/auth/accept-invite"));
 const ForgotPasswordPage = lazy(() => import("@/pages/auth/forgot-password"));
 const ResetPasswordPage = lazy(() => import("@/pages/auth/reset-password"));
@@ -77,8 +78,17 @@ export default function App() {
                   </RequireGuest>
                 }
               />
-              {/* Accounts are created by an administrator, so the way in is an
-                  invitation link rather than a signup form. */}
+              {/* Public sign-up is for customers only; the backend forces the
+                  role. Internal staff are still created by an administrator
+                  and arrive through an invitation link. */}
+              <Route
+                path="/signup"
+                element={
+                  <RequireGuest>
+                    <SignupPage />
+                  </RequireGuest>
+                }
+              />
               <Route path="/accept-invite" element={<AcceptInvitePage />} />
               <Route path="/forgot-password" element={<ForgotPasswordPage />} />
               <Route path="/reset-password" element={<ResetPasswordPage />} />

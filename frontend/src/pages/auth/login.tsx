@@ -48,8 +48,11 @@ export default function LoginPage() {
       description="Welcome back. Enter your details to continue."
       footer={
         <>
-          Accounts are created by an administrator. Need one? Ask your admin to
-          send you an invitation.
+          Buying from us?{" "}
+          <Link to="/signup" className="underline underline-offset-4 hover:text-foreground">
+            Create an account
+          </Link>
+          . Sales and finance accounts are created by an administrator.
         </>
       }
     >
