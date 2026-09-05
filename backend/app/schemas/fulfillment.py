@@ -35,6 +35,37 @@ class AllocationRead(BaseModel):
     is_manual: bool
 
 
+class WarehouseSplitRow(BaseModel):
+    """One row of mockup screen 8: what each warehouse is sending.
+
+    Grouped by warehouse rather than by line, because that is the unit a
+    shipment is planned in - a warehouse sends one box however many lines it
+    covers.
+    """
+
+    warehouse_id: uuid.UUID
+    warehouse_name: str
+    warehouse_code: str
+    quantity: int
+    quantity_shipped: int
+    shipment_count: int
+    cost: float
+    is_backorder: bool = False
+    expected_restock_date: Optional[date] = None
+
+
+class ShipmentLineRead(BaseModel):
+    """What was actually in a shipment."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    line_label: str
+    sku: Optional[str] = None
+    quantity_shipped: int
+    quantity_invoiced: int
+
+
 class ShipmentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -48,6 +79,7 @@ class ShipmentRead(BaseModel):
     shipped_at: Optional[datetime] = None
     delivered_at: Optional[datetime] = None
     unit_count: int = 0
+    lines: List[ShipmentLineRead] = Field(default_factory=list)
 
 
 class FulfillmentRow(BaseModel):
@@ -75,6 +107,7 @@ class FulfillmentRow(BaseModel):
 class FulfillmentDetail(FulfillmentRow):
     """Screen 8, in one response."""
 
+    by_warehouse: List[WarehouseSplitRow] = Field(default_factory=list)
     allocations: List[AllocationRead] = Field(default_factory=list)
     shipments: List[ShipmentRead] = Field(default_factory=list)
     # True when stock has arrived for something still backordered, which is

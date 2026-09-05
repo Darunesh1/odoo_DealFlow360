@@ -558,21 +558,28 @@ async def ship(
     return shipment
 
 
-async def consolidate_backorders(db: AsyncSession) -> int:
-    """The scheduled sweep behind the mockup's automatic prompt.
+async def consolidate_backorders(
+    db: AsyncSession, *, fulfillment_id: Optional[uuid.UUID] = None
+) -> int:
+    """The sweep behind the mockup's automatic prompt.
 
     When stock arrives at a warehouse a backordered allocation is waiting on,
     it is reserved and folded into that warehouse's existing planned shipment
     rather than opening a second one - which is exactly what "Consolidate
     Remaining Backorder" means.
+
+    `fulfillment_id` narrows it to one order, which is what the button on the
+    split screen means; the scheduler calls it with none and sweeps everything.
     """
-    backordered = (
-        await db.execute(
-            select(FulfillmentAllocation)
-            .where(FulfillmentAllocation.status == AllocationStatus.BACKORDERED)
-            .order_by(FulfillmentAllocation.created_at.asc())
-        )
-    ).scalars().all()
+    stmt = (
+        select(FulfillmentAllocation)
+        .where(FulfillmentAllocation.status == AllocationStatus.BACKORDERED)
+        .order_by(FulfillmentAllocation.created_at.asc())
+    )
+    if fulfillment_id is not None:
+        stmt = stmt.where(FulfillmentAllocation.fulfillment_id == fulfillment_id)
+
+    backordered = (await db.execute(stmt)).scalars().all()
 
     merged = 0
     touched: set[uuid.UUID] = set()

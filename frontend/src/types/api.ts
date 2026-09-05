@@ -829,6 +829,27 @@ export interface Allocation {
   is_manual: boolean
 }
 
+/** One row of the warehouse split — the mockup's shape, grouped by warehouse. */
+export interface WarehouseSplitRow {
+  warehouse_id: string
+  warehouse_name: string
+  warehouse_code: string
+  quantity: number
+  quantity_shipped: number
+  shipment_count: number
+  cost: number
+  is_backorder: boolean
+  expected_restock_date: string | null
+}
+
+export interface ShipmentLineRow {
+  id: string
+  line_label: string
+  sku: string | null
+  quantity_shipped: number
+  quantity_invoiced: number
+}
+
 export interface ShipmentRow {
   id: string
   reference: string
@@ -840,6 +861,7 @@ export interface ShipmentRow {
   shipped_at: string | null
   delivered_at: string | null
   unit_count: number
+  lines: ShipmentLineRow[]
 }
 
 export interface FulfillmentRow {
@@ -861,6 +883,7 @@ export interface FulfillmentRow {
 }
 
 export interface FulfillmentDetail extends FulfillmentRow {
+  by_warehouse: WarehouseSplitRow[]
   allocations: Allocation[]
   shipments: ShipmentRow[]
   can_consolidate: boolean

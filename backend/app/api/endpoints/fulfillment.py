@@ -29,6 +29,8 @@ from app.models.user import Role, User
 from app.schemas.common import Page
 from app.schemas.fulfillment import (
     AllocationRead,
+    ShipmentLineRead,
+    WarehouseSplitRow,
     FulfillmentDetail,
     FulfillmentRow,
     OverrideInput,
@@ -194,15 +196,56 @@ async def _detail(
             if stock is not None and int(stock.quantity_available) >= allocation.quantity:
                 can_consolidate = True
 
+    # One row per warehouse - the shape mockup screen 8 asks for, and the unit
+    # a shipment is actually planned in.
+    shipment_counts: dict[uuid.UUID, int] = {}
+    for shipment in await fulfillment_service.list_shipments(db, fulfillment.id):
+        shipment_counts[shipment.warehouse_id] = (
+            shipment_counts.get(shipment.warehouse_id, 0) + 1
+        )
+
+    rollup: dict[tuple[uuid.UUID, bool], WarehouseSplitRow] = {}
+    for allocation in fulfillment.allocations:
+        warehouse = warehouses.get(allocation.warehouse_id)
+        backordered = allocation.status == AllocationStatus.BACKORDERED
+        # Backorders are kept apart from what is actually going out: folding
+        # them together would show a warehouse "sending" units it does not have.
+        key = (allocation.warehouse_id, backordered)
+        row = rollup.get(key)
+        if row is None:
+            row = WarehouseSplitRow(
+                warehouse_id=allocation.warehouse_id,
+                warehouse_name=warehouse.name if warehouse else "—",
+                warehouse_code=warehouse.code if warehouse else "—",
+                quantity=0,
+                quantity_shipped=0,
+                shipment_count=0 if backordered else shipment_counts.get(allocation.warehouse_id, 0),
+                cost=0.0,
+                is_backorder=backordered,
+            )
+            rollup[key] = row
+        row.quantity += allocation.quantity
+        row.quantity_shipped += allocation.quantity_shipped
+        row.cost = round(row.cost + float(allocation.estimated_shipping_cost), 2)
+        if allocation.expected_restock_date and (
+            row.expected_restock_date is None
+            or allocation.expected_restock_date > row.expected_restock_date
+        ):
+            row.expected_restock_date = allocation.expected_restock_date
+
+    by_warehouse = sorted(
+        rollup.values(), key=lambda r: (r.is_backorder, r.warehouse_name)
+    )
+
+    line_labels = {line.id: line for line in quotation.lines}
     shipments = []
     for shipment in await fulfillment_service.list_shipments(db, fulfillment.id):
-        units = (
+        shipment_lines = (
             await db.execute(
-                select(func.coalesce(func.sum(ShipmentLine.quantity_shipped), 0)).where(
-                    ShipmentLine.shipment_id == shipment.id
-                )
+                select(ShipmentLine).where(ShipmentLine.shipment_id == shipment.id)
             )
-        ).scalar_one()
+        ).scalars().all()
+        units = sum(row.quantity_shipped for row in shipment_lines)
         warehouse = warehouses.get(shipment.warehouse_id)
         shipments.append(
             ShipmentRead(
@@ -217,11 +260,30 @@ async def _detail(
                 shipped_at=shipment.shipped_at,
                 delivered_at=shipment.delivered_at,
                 unit_count=int(units),
+                lines=[
+                    ShipmentLineRead(
+                        id=row.id,
+                        line_label=(
+                            line_labels[row.quotation_line_id].product_name
+                            if row.quotation_line_id in line_labels
+                            else "—"
+                        ),
+                        sku=(
+                            line_labels[row.quotation_line_id].sku
+                            if row.quotation_line_id in line_labels
+                            else None
+                        ),
+                        quantity_shipped=row.quantity_shipped,
+                        quantity_invoiced=row.quantity_invoiced,
+                    )
+                    for row in shipment_lines
+                ],
             )
         )
 
     return FulfillmentDetail(
         **await _row(db, fulfillment, quotation),
+        by_warehouse=by_warehouse,
         allocations=allocations,
         shipments=shipments,
         can_consolidate=can_consolidate,
@@ -330,10 +392,11 @@ async def consolidate(
 ) -> Any:
     """"Consolidate Remaining Backorder", run on demand.
 
-    The same sweep the scheduler runs every fifteen minutes; this is the button
-    for when someone has just booked the stock in and does not want to wait.
+    The same sweep the scheduler runs every fifteen minutes, narrowed to this
+    order - the button names one fulfillment, so it should not quietly touch
+    every other order in the system.
     """
-    await fulfillment_service.consolidate_backorders(db)
+    await fulfillment_service.consolidate_backorders(db, fulfillment_id=fulfillment_id)
     fulfillment, quotation = await _load(db, fulfillment_id)
     return await _detail(db, fulfillment, quotation)
 

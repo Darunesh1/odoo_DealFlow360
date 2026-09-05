@@ -201,12 +201,70 @@ export default function FulfillmentDetailPage() {
 
       <Card>
         <CardHeader>
+          <CardTitle className="text-base">Warehouse split</CardTitle>
+          <CardDescription>
+            What each warehouse is sending, and what it costs to send it.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="px-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="min-w-[12rem]">Warehouse</TableHead>
+                  <TableHead className="text-right">Qty fulfilled</TableHead>
+                  <TableHead className="text-right">Est. shipments</TableHead>
+                  <TableHead className="text-right">Cost</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {fulfillment.by_warehouse.map((row) => (
+                  <TableRow
+                    key={`${row.warehouse_id}-${row.is_backorder}`}
+                    className={cn(row.is_backorder && "bg-amber-500/[0.05]")}
+                  >
+                    <TableCell>
+                      <span className="font-medium">{row.warehouse_name}</span>
+                      {row.is_backorder ? (
+                        <p className="text-xs text-amber-700 dark:text-amber-400">
+                          Backordered
+                          {row.expected_restock_date
+                            ? ` · expected ${new Date(row.expected_restock_date).toLocaleDateString()}`
+                            : ""}
+                        </p>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {row.quantity} units
+                      {row.quantity_shipped > 0 ? (
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          ({row.quantity_shipped} shipped)
+                        </span>
+                      ) : null}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {row.is_backorder ? "—" : row.shipment_count}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {row.is_backorder ? "—" : money(row.cost, fulfillment.currency)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <CardTitle className="text-base">Warehouse split</CardTitle>
+              <CardTitle className="text-base">Lines</CardTitle>
               <CardDescription>
-                Fewest warehouses first, ties broken on the shipping rates an
-                admin entered. Anything no warehouse can cover backorders.
+                Line by line, and where each is drawn from. Fewest warehouses
+                first, ties broken on the shipping rates an admin entered;
+                anything no warehouse can cover backorders.
               </CardDescription>
             </div>
             {canOperate && !accepted ? (
@@ -257,7 +315,8 @@ export default function FulfillmentDetailPage() {
                 <TableRow>
                   <TableHead className="min-w-[14rem]">Line</TableHead>
                   <TableHead className="min-w-[12rem]">Warehouse</TableHead>
-                  <TableHead className="text-right">Qty fulfilled</TableHead>
+                  <TableHead className="text-right">Allocated</TableHead>
+                  <TableHead className="text-right">Shipped</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Est. cost</TableHead>
                 </TableRow>
@@ -312,9 +371,11 @@ export default function FulfillmentDetailPage() {
                   <TableRow>
                     <TableHead>Reference</TableHead>
                     <TableHead>Warehouse</TableHead>
+                    <TableHead>Contents</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Shipped</TableHead>
                     <TableHead className="text-right">Units</TableHead>
-                    <TableHead className="text-right">Est. cost</TableHead>
+                    <TableHead className="text-right">Cost</TableHead>
                     <TableHead />
                   </TableRow>
                 </TableHeader>
@@ -325,6 +386,24 @@ export default function FulfillmentDetailPage() {
                         {shipment.reference}
                       </TableCell>
                       <TableCell>{shipment.warehouse_name}</TableCell>
+                      <TableCell className="min-w-[14rem]">
+                        {shipment.lines.length === 0 ? (
+                          <span className="text-muted-foreground">
+                            Nothing dispatched yet
+                          </span>
+                        ) : (
+                          shipment.lines.map((line) => (
+                            <p key={line.id} className="text-sm leading-tight">
+                              {line.quantity_shipped} x {line.line_label}
+                              {line.quantity_invoiced > 0 ? (
+                                <span className="ml-1 text-xs text-muted-foreground">
+                                  ({line.quantity_invoiced} invoiced)
+                                </span>
+                              ) : null}
+                            </p>
+                          ))
+                        )}
+                      </TableCell>
                       <TableCell>
                         <Badge
                           variant={
@@ -337,11 +416,29 @@ export default function FulfillmentDetailPage() {
                           {shipment.status}
                         </Badge>
                       </TableCell>
+                      <TableCell className="text-muted-foreground">
+                        {shipment.shipped_at
+                          ? new Date(shipment.shipped_at).toLocaleDateString()
+                          : "—"}
+                        {shipment.delivered_at ? (
+                          <p className="text-xs">
+                            delivered{" "}
+                            {new Date(shipment.delivered_at).toLocaleDateString()}
+                          </p>
+                        ) : null}
+                      </TableCell>
                       <TableCell className="text-right font-mono tabular-nums">
                         {shipment.unit_count}
                       </TableCell>
                       <TableCell className="text-right font-mono tabular-nums">
-                        {money(shipment.estimated_cost, fulfillment.currency)}
+                        {/* Actual once the carrier has billed; the estimate
+                            until then, so the column is never blank. */}
+                        {shipment.actual_cost > 0
+                          ? money(shipment.actual_cost, fulfillment.currency)
+                          : money(shipment.estimated_cost, fulfillment.currency)}
+                        {shipment.actual_cost > 0 ? null : (
+                          <p className="text-xs text-muted-foreground">estimated</p>
+                        )}
                       </TableCell>
                       <TableCell className="text-right">
                         {canOperate && shipment.status === "planned" ? (
@@ -427,6 +524,17 @@ function AllocationRow({
           />
         ) : (
           <span className="font-mono tabular-nums">{allocation.quantity} units</span>
+        )}
+        {allocation.is_manual ? (
+          <p className="text-xs text-muted-foreground">set by hand</p>
+        ) : null}
+      </TableCell>
+
+      <TableCell className="text-right font-mono tabular-nums">
+        {allocation.quantity_shipped > 0 ? (
+          allocation.quantity_shipped
+        ) : (
+          <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
 
