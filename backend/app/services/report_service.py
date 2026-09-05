@@ -74,6 +74,26 @@ def _apply(stmt: Select, filters: ReportFilters) -> Select:
     return stmt
 
 
+def _apply_to_quotations(stmt: Select, filters: ReportFilters) -> Select:
+    """The same filter set, expressed against quotations rather than history.
+
+    Only the dimensions a quotation actually carries: period, rep and team.
+    Category and product live on the line, so filtering a quotation count by
+    them would need a join that changes what "a quote" means.
+    """
+    if filters.date_from:
+        stmt = stmt.where(Quotation.created_at >= filters.date_from)
+    if filters.date_to:
+        stmt = stmt.where(
+            Quotation.created_at < filters.date_to + timedelta(days=1)
+        )
+    if filters.rep_id:
+        stmt = stmt.where(Quotation.owner_id == filters.rep_id)
+    if filters.team_id:
+        stmt = stmt.where(Quotation.sales_team_id == filters.team_id)
+    return stmt
+
+
 async def build(db: AsyncSession, filters: ReportFilters) -> dict[str, Any]:
     """The whole reporting screen in one cached payload."""
 
@@ -101,32 +121,43 @@ async def _build(db: AsyncSession, filters: ReportFilters) -> dict[str, Any]:
         )
     ).one()
 
+    # These three read quotations rather than sales history, so they take the
+    # filters through _apply_to_quotations rather than _apply. Before this they
+    # ignored every filter, and a conversion rate built from a filtered
+    # numerator over an unfiltered denominator meant nothing at all.
     quotes_created = (
-        await db.execute(select(func.count()).select_from(Quotation))
+        await db.execute(
+            _apply_to_quotations(select(func.count()).select_from(Quotation), filters)
+        )
     ).scalar_one()
     quotes_confirmed = (
         await db.execute(
-            select(func.count())
-            .select_from(Quotation)
-            .where(Quotation.status == QuotationStatus.CONFIRMED)
+            _apply_to_quotations(
+                select(func.count())
+                .select_from(Quotation)
+                .where(Quotation.status == QuotationStatus.CONFIRMED),
+                filters,
+            )
         )
     ).scalar_one()
 
     # Average approval time: how long a decided round actually took. Null
     # decided_at rows are still pending and would drag the average down.
-    approval_seconds = (
-        await db.execute(
-            select(
-                func.avg(
-                    func.extract("epoch", Approval.decided_at - Approval.submitted_at)
-                )
-            ).where(
-                Approval.decided_at.isnot(None),
-                Approval.status.in_(
-                    [ApprovalStatus.APPROVED, ApprovalStatus.REJECTED]
-                ),
+    approval_stmt = (
+        select(
+            func.avg(
+                func.extract("epoch", Approval.decided_at - Approval.submitted_at)
             )
         )
+        .select_from(Approval)
+        .join(Quotation, Approval.quotation_id == Quotation.id)
+        .where(
+            Approval.decided_at.isnot(None),
+            Approval.status.in_([ApprovalStatus.APPROVED, ApprovalStatus.REJECTED]),
+        )
+    )
+    approval_seconds = (
+        await db.execute(_apply_to_quotations(approval_stmt, filters))
     ).scalar_one_or_none()
 
     top_upsold = (
@@ -283,63 +314,192 @@ async def rows_for_export(
     ]
 
 
-async def dashboard(db: AsyncSession, viewer_id: Optional[uuid.UUID]) -> dict[str, Any]:
-    """The home screen's tiles and activity feed (mockup screen 2)."""
+# Which quotation states count as "still in play". Shared so the dashboard and
+# the quotation list cannot drift into two different definitions of "open".
+OPEN_STATES = [
+    QuotationStatus.DRAFT,
+    QuotationStatus.PENDING_APPROVAL,
+    QuotationStatus.APPROVED,
+    QuotationStatus.NEGOTIATION,
+]
+PIPELINE_STATES = [
+    QuotationStatus.PENDING_APPROVAL,
+    QuotationStatus.APPROVED,
+    QuotationStatus.NEGOTIATION,
+]
+
+
+def _owned_by(stmt, viewer):
+    """The same predicate the quotations and approvals lists apply.
+
+    A rep's dashboard has to count what their own screens count. Before this,
+    the tiles were company-wide while every list they linked to was
+    owner-scoped, so a rep saw "4 pending approvals" and then an empty inbox.
+    """
+    from app.models.user import Role
+
+    if viewer is None or viewer.has_role(
+        Role.ADMIN, Role.SALES_MANAGER, Role.FINANCE
+    ):
+        return stmt
+    return stmt.where(Quotation.owner_id == viewer.id)
+
+
+async def dashboard(db: AsyncSession, viewer) -> dict[str, Any]:
+    """The home screen, scoped to whoever is looking at it (mockup screen 2).
+
+    Every figure is computed from the same query as the screen its tile links
+    to, and the cache key carries the viewer - a single shared key would serve
+    one person's scoped numbers to everybody.
+    """
+    from app.models.user import Role
+
+    role_key = "admin"
+    if viewer is not None:
+        if viewer.has_role(Role.ADMIN):
+            role_key = "admin"
+        elif viewer.has_role(Role.FINANCE):
+            role_key = "finance"
+        elif viewer.has_role(Role.SALES_MANAGER):
+            role_key = "manager"
+        elif viewer.has_role(Role.SALES_REP):
+            role_key = "rep"
 
     async def load() -> dict[str, Any]:
         from app.models.analytics import AlertStatus, DealHealthAlert
-        from app.services import audit_service
+        from app.models.billing import CreditNote, CreditNoteStatus, Invoice, InvoiceStatus
+        from app.models.fulfillment import Fulfillment, FulfillmentStatus
+        from app.services import approval_service, audit_service
 
-        pending = (
-            await db.execute(
-                select(func.count())
-                .select_from(Approval)
-                .where(Approval.status == ApprovalStatus.PENDING)
-            )
-        ).scalar_one()
+        # --- shared, all scoped the same way as the lists they link to ---- #
         open_quotes = (
             await db.execute(
-                select(func.count())
-                .select_from(Quotation)
-                .where(
-                    Quotation.status.in_(
-                        [
-                            QuotationStatus.DRAFT,
-                            QuotationStatus.PENDING_APPROVAL,
-                            QuotationStatus.APPROVED,
-                            QuotationStatus.NEGOTIATION,
-                        ]
-                    )
+                _owned_by(
+                    select(func.count()).select_from(Quotation).where(
+                        Quotation.status.in_(OPEN_STATES)
+                    ),
+                    viewer,
                 )
-            )
-        ).scalar_one()
-        at_risk = (
-            await db.execute(
-                select(func.count())
-                .select_from(DealHealthAlert)
-                .where(DealHealthAlert.status != AlertStatus.RESOLVED)
             )
         ).scalar_one()
         pipeline_value = (
             await db.execute(
-                select(func.coalesce(func.sum(Quotation.total), 0)).where(
-                    Quotation.status.in_(
-                        [
-                            QuotationStatus.PENDING_APPROVAL,
-                            QuotationStatus.APPROVED,
-                            QuotationStatus.NEGOTIATION,
-                        ]
+                _owned_by(
+                    select(func.coalesce(func.sum(Quotation.total), 0)).where(
+                        Quotation.status.in_(PIPELINE_STATES)
+                    ),
+                    viewer,
+                )
+            )
+        ).scalar_one()
+        awaiting = (
+            await db.execute(
+                _owned_by(
+                    select(func.count())
+                    .select_from(Approval)
+                    .join(Quotation, Approval.quotation_id == Quotation.id)
+                    .where(Approval.status == ApprovalStatus.PENDING),
+                    viewer,
+                )
+            )
+        ).scalar_one()
+        returned = (
+            await db.execute(
+                _owned_by(
+                    select(func.count())
+                    .select_from(Approval)
+                    .join(Quotation, Approval.quotation_id == Quotation.id)
+                    .where(Approval.status == ApprovalStatus.RETURNED),
+                    viewer,
+                )
+            )
+        ).scalar_one()
+        # DISTINCT quotations, not alerts: one deal with a stall and a slippage
+        # is one deal at risk, and the tile says "deals".
+        at_risk = (
+            await db.execute(
+                _owned_by(
+                    select(func.count(func.distinct(DealHealthAlert.quotation_id)))
+                    .select_from(DealHealthAlert)
+                    .join(Quotation, DealHealthAlert.quotation_id == Quotation.id)
+                    .where(DealHealthAlert.status != AlertStatus.RESOLVED),
+                    viewer,
+                )
+            )
+        ).scalar_one()
+
+        # --- whose turn it is, using the inbox's own predicate ------------- #
+        waiting_on_me = 0
+        if viewer is not None:
+            pending_rounds = (
+                await db.execute(
+                    select(Approval).where(Approval.status == ApprovalStatus.PENDING)
+                )
+            ).scalars().all()
+            waiting_on_me = sum(
+                1 for approval in pending_rounds
+                if approval_service.can_act(approval, viewer)
+            )
+
+        # --- finance ------------------------------------------------------- #
+        splits_to_accept = (
+            await db.execute(
+                select(func.count())
+                .select_from(Fulfillment)
+                .where(
+                    Fulfillment.accepted_at.is_(None),
+                    Fulfillment.status.notin_(
+                        [FulfillmentStatus.FULFILLED, FulfillmentStatus.CANCELLED]
+                    ),
+                )
+            )
+        ).scalar_one()
+        unpaid_invoices = (
+            await db.execute(
+                select(func.count())
+                .select_from(Invoice)
+                .where(
+                    Invoice.status.in_(
+                        [InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]
                     )
                 )
+            )
+        ).scalar_one()
+        outstanding = (
+            await db.execute(
+                select(
+                    func.coalesce(func.sum(Invoice.total - Invoice.amount_paid), 0)
+                ).where(
+                    Invoice.status.in_(
+                        [InvoiceStatus.UNPAID, InvoiceStatus.PARTIALLY_PAID]
+                    )
+                )
+            )
+        ).scalar_one()
+        credits_to_apply = (
+            await db.execute(
+                select(func.count())
+                .select_from(CreditNote)
+                .where(CreditNote.status == CreditNoteStatus.ISSUED)
             )
         ).scalar_one()
 
         activity = await audit_service.recent(db, limit=8)
         return {
-            "pending_approvals": int(pending),
+            "role": role_key,
             "open_quotations": int(open_quotes),
-            "at_risk_deals": int(at_risk),
             "pipeline_value": float(pipeline_value),
+            "awaiting_approval": int(awaiting),
+            "returned_to_me": int(returned),
+            "waiting_on_me": int(waiting_on_me),
+            "at_risk_deals": int(at_risk),
+            "splits_to_accept": int(splits_to_accept),
+            "unpaid_invoices": int(unpaid_invoices),
+            "outstanding_amount": float(outstanding),
+            "credits_to_apply": int(credits_to_apply),
+            # Kept for the admin tile, and equal to awaiting_approval for
+            # anyone whose scope is the whole company.
+            "pending_approvals": int(awaiting),
             "recent_activity": [
                 {
                     "id": str(entry.id),
@@ -355,6 +515,7 @@ async def dashboard(db: AsyncSession, viewer_id: Optional[uuid.UUID]) -> dict[st
             ],
         }
 
+    viewer_key = str(viewer.id) if viewer is not None else "anonymous"
     return await cached_json(
-        cache.NS_DASHBOARD, "home", cache.TTL_DASHBOARD, load
+        cache.NS_DASHBOARD, f"home:{role_key}:{viewer_key}", cache.TTL_DASHBOARD, load
     )

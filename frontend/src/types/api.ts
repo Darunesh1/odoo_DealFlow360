@@ -459,10 +459,19 @@ export interface ActivityEntry {
 }
 
 export interface DashboardData {
-  pending_approvals: number
+  /** Which set of tiles to render. */
+  role: "admin" | "manager" | "finance" | "rep"
   open_quotations: number
-  at_risk_deals: number
   pipeline_value: number
+  awaiting_approval: number
+  returned_to_me: number
+  waiting_on_me: number
+  at_risk_deals: number
+  splits_to_accept: number
+  unpaid_invoices: number
+  outstanding_amount: number
+  credits_to_apply: number
+  pending_approvals: number
   recent_activity: ActivityEntry[]
 }
 

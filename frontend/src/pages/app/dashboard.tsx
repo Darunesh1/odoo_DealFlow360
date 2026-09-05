@@ -1,11 +1,15 @@
 import { Link } from "react-router-dom"
 import {
   ArrowRightIcon,
+  FileMinusIcon,
   FileTextIcon,
   GavelIcon,
   PlusIcon,
+  ReceiptIcon,
+  RotateCcwIcon,
   TrendingUpIcon,
   TriangleAlertIcon,
+  TruckIcon,
 } from "lucide-react"
 
 import { PageHeader } from "@/components/page-header"
@@ -20,7 +24,7 @@ import {
 import { useAuth } from "@/features/auth/use-auth"
 import { useDashboard } from "@/features/analytics/use-analytics"
 import { money, relativeTime } from "@/features/quotations/format"
-import type { ActivityEntry } from "@/types/api"
+import type { ActivityEntry, DashboardData } from "@/types/api"
 
 /** Where an audit entry points, so a row in the feed is clickable. */
 function entityHref(entry: ActivityEntry) {
@@ -47,10 +51,54 @@ function describe(entry: ActivityEntry) {
   return `${entry.actor_name} ${action}${number ? ` ${number}` : ""}`
 }
 
+/**
+ * What each role actually needs to see first thing.
+ *
+ * Every figure comes from the same query as the screen its tile links to, so
+ * clicking a number lands on a list showing that number. The dashboard used to
+ * count company-wide while every list was owner-scoped, which meant a rep read
+ * "4 pending approvals" and then opened an empty inbox.
+ */
+function tilesFor(data: DashboardData | undefined) {
+  const money0 = (value: number) => money(value)
+
+  switch (data?.role) {
+    case "rep":
+      return [
+        { label: "My open quotations", value: data.open_quotations, hint: "still in play", to: "/app/quotations", icon: FileTextIcon },
+        { label: "Awaiting approval", value: data.awaiting_approval, hint: "submitted, undecided", to: "/app/approvals?status=pending", icon: GavelIcon },
+        { label: "Returned to me", value: data.returned_to_me, hint: "needs a revision", to: "/app/approvals?status=returned", icon: RotateCcwIcon, alarming: data.returned_to_me > 0 },
+        { label: "My pipeline", value: money0(data.pipeline_value), hint: "not yet confirmed", to: "/app/pipeline", icon: TrendingUpIcon },
+      ]
+    case "manager":
+      return [
+        { label: "Waiting on me", value: data.waiting_on_me, hint: "my decision", to: "/app/approvals", icon: GavelIcon, alarming: data.waiting_on_me > 0 },
+        { label: "Open quotations", value: data.open_quotations, hint: "across the team", to: "/app/quotations", icon: FileTextIcon },
+        { label: "At-risk deals", value: data.at_risk_deals, hint: "flagged by deal health", to: "/app/deal-health", icon: TriangleAlertIcon, alarming: data.at_risk_deals > 0 },
+        { label: "Pipeline", value: money0(data.pipeline_value), hint: "not yet confirmed", to: "/app/pipeline", icon: TrendingUpIcon },
+      ]
+    case "finance":
+      return [
+        { label: "Splits to accept", value: data.splits_to_accept, hint: "stock not yet reserved", to: "/app/fulfillment", icon: TruckIcon, alarming: data.splits_to_accept > 0 },
+        { label: "Unpaid invoices", value: data.unpaid_invoices, hint: "outstanding or part-paid", to: "/app/invoices?status=unpaid", icon: ReceiptIcon },
+        { label: "Owed to us", value: money0(data.outstanding_amount), hint: "across every open invoice", to: "/app/invoices", icon: TrendingUpIcon },
+        { label: "Credits to apply", value: data.credits_to_apply, hint: "owed back to customers", to: "/app/credit-notes", icon: FileMinusIcon, alarming: data.credits_to_apply > 0 },
+      ]
+    default:
+      return [
+        { label: "Pending approvals", value: data?.pending_approvals ?? 0, hint: "waiting on a decision", to: "/app/approvals", icon: GavelIcon },
+        { label: "Open quotations", value: data?.open_quotations ?? 0, hint: "active deals", to: "/app/quotations", icon: FileTextIcon },
+        { label: "At-risk deals", value: data?.at_risk_deals ?? 0, hint: "flagged by deal health", to: "/app/deal-health", icon: TriangleAlertIcon, alarming: Boolean(data?.at_risk_deals) },
+        { label: "Pipeline value", value: money0(data?.pipeline_value ?? 0), hint: "not yet confirmed", to: "/app/pipeline", icon: TrendingUpIcon },
+      ]
+  }
+}
+
 export default function DashboardPage() {
   const { user, hasRole } = useAuth()
   const { data, isLoading } = useDashboard()
   const canQuote = hasRole("admin", "sales_rep", "sales_manager")
+  const tiles = tilesFor(data)
 
   return (
     <div className="space-y-6">
@@ -70,39 +118,9 @@ export default function DashboardPage() {
       />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Tile
-          label="Pending approvals"
-          value={data?.pending_approvals}
-          hint="waiting on a decision"
-          to="/app/approvals"
-          icon={GavelIcon}
-          loading={isLoading}
-        />
-        <Tile
-          label="Open quotations"
-          value={data?.open_quotations}
-          hint="active deals"
-          to="/app/quotations"
-          icon={FileTextIcon}
-          loading={isLoading}
-        />
-        <Tile
-          label="At-risk deals"
-          value={data?.at_risk_deals}
-          hint="flagged by deal health"
-          to="/app/deal-health"
-          icon={TriangleAlertIcon}
-          loading={isLoading}
-          alarming={Boolean(data?.at_risk_deals)}
-        />
-        <Tile
-          label="Pipeline value"
-          value={data ? money(data.pipeline_value) : undefined}
-          hint="not yet confirmed"
-          to="/app/pipeline"
-          icon={TrendingUpIcon}
-          loading={isLoading}
-        />
+        {tiles.map((tile) => (
+          <Tile key={tile.label} {...tile} loading={isLoading} />
+        ))}
       </div>
 
       <Card>

@@ -23,12 +23,29 @@ class ActivityEntry(BaseModel):
 
 
 class DashboardRead(BaseModel):
-    """Screen 2's tiles and its Recent Activity list."""
+    """Screen 2's tiles and its Recent Activity list.
+
+    Every figure is scoped to whoever asked, and computed from the same query
+    as the screen its tile links to - the point being that clicking a number
+    lands on a list that shows that number.
+    """
+
+    # Which set of tiles to render.
+    role: str = "admin"
+
+    open_quotations: int = 0
+    pipeline_value: float = 0
+    awaiting_approval: int = 0
+    returned_to_me: int = 0
+    waiting_on_me: int = 0
+    at_risk_deals: int = 0
+
+    splits_to_accept: int = 0
+    unpaid_invoices: int = 0
+    outstanding_amount: float = 0
+    credits_to_apply: int = 0
 
     pending_approvals: int = 0
-    open_quotations: int = 0
-    at_risk_deals: int = 0
-    pipeline_value: float = 0
     recent_activity: List[ActivityEntry] = Field(default_factory=list)
 
 

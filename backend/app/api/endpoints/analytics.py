@@ -45,7 +45,7 @@ async def read_dashboard(
     current_user: User = Depends(get_current_user),
 ) -> Any:
     """Screen 2: the tiles and the activity feed."""
-    return await report_service.dashboard(db, current_user.id)
+    return await report_service.dashboard(db, current_user)
 
 
 # --------------------------------------------------------------------------- #
