@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
 from typing import Any, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, get_redis
+from app.core import rate_limit
 from app.core.redis import is_token_revoked, revoke_token
 from app.core.security import (
     INVITE_TOKEN_TYPE,
@@ -22,10 +23,11 @@ from app.core.security import (
     parse_uuid,
     verify_password,
 )
-from app.models.user import User
+from app.models.user import Role, User
 from app.schemas.common import Message
 from app.schemas.token import RefreshRequest, Token, TokenPayload
 from app.schemas.user import (
+    CustomerRegister,
     EmailRequest,
     InviteAccept,
     PasswordChange,
@@ -36,11 +38,13 @@ from app.services import (
     accept_invite,
     get_user_by_email,
     get_user_by_id,
+    register_customer,
     set_password,
     verify_user_email,
 )
 from app.tasks.email_tasks import (
     send_invite_email,
+    send_sign_in_alert_email,
     send_password_reset_email,
     send_verification_email,
     send_welcome_email,
@@ -151,12 +155,59 @@ async def accept_invitation(
     return Message(message="Password set. You can now sign in.")
 
 
+@router.post("/register", response_model=Message, status_code=status.HTTP_201_CREATED)
+async def register(
+    request: Request,
+    body: CustomerRegister,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Public sign-up. Everyone who registers here becomes a customer.
+
+    Internal staff are still created by an administrator through
+    POST /admin/users - there is no path from this route to any other role,
+    because CustomerRegister has no field that could carry one.
+
+    Returns the same generic message whether or not the address was already
+    taken, so registration cannot be used to enumerate accounts any more than
+    /forgot-password can.
+    """
+    await rate_limit.enforce(
+        request, scope="register", limit=rate_limit.REGISTER, identifier=body.email
+    )
+
+    existing = await get_user_by_email(db, email=body.email)
+    if existing is not None:
+        return GENERIC_EMAIL_RESPONSE
+
+    try:
+        user = await register_customer(
+            db,
+            full_name=body.full_name,
+            email=body.email,
+            password=body.password,
+            company_name=body.company_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+    send_verification_email.delay(
+        email=user.email,
+        token=create_verification_token(user.id),
+        full_name=user.full_name or "",
+    )
+    return GENERIC_EMAIL_RESPONSE
+
+
 @router.post("/login", response_model=Token)
 async def login(
+    request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     """OAuth2 compatible token login, retrieve access and refresh tokens."""
+    await rate_limit.enforce(
+        request, scope="login", limit=rate_limit.LOGIN, identifier=form_data.username
+    )
     user = await get_user_by_email(db, email=form_data.username)
     if not user or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
@@ -169,6 +220,17 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
+        )
+
+    # Customers get told when their account is used; staff do not. Fire and
+    # forget - a sign-in must not wait on, or fail because of, SMTP.
+    if Role.CUSTOMER in user.roles:
+        send_sign_in_alert_email.delay(
+            email=user.email,
+            full_name=user.full_name or "",
+            when=datetime.now(timezone.utc).strftime("%d %b %Y at %H:%M UTC"),
+            ip_address=rate_limit.client_ip(request),
+            user_agent=request.headers.get("user-agent", ""),
         )
 
     return _issue_tokens(user)
@@ -284,9 +346,15 @@ async def resend_verification(
 
 @router.post("/forgot-password", response_model=Message)
 async def forgot_password(
-    body: EmailRequest, db: AsyncSession = Depends(get_db)
+    request: Request, body: EmailRequest, db: AsyncSession = Depends(get_db)
 ) -> Any:
     """Starts a password reset, without disclosing whether the address exists."""
+    await rate_limit.enforce(
+        request,
+        scope="password-reset",
+        limit=rate_limit.PASSWORD_RESET,
+        identifier=body.email,
+    )
     user = await get_user_by_email(db, email=body.email)
     if user and user.is_active:
         # Someone who never accepted their invite has no password to reset, and
