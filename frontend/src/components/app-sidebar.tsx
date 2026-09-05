@@ -3,6 +3,7 @@ import {
   LayoutDashboardIcon,
   LayoutGridIcon,
   FileTextIcon,
+  GavelIcon,
   ShieldCheckIcon,
   PackageIcon,
   UsersIcon,
@@ -44,6 +45,11 @@ const PLATFORM: NavItem[] = [
   { title: "Pipeline", url: "/app/pipeline", icon: LayoutGridIcon, nested: true },
 ]
 
+// Every internal role sees approvals; only the waiting step's role can decide.
+const GOVERNANCE: NavItem[] = [
+  { title: "Approvals", url: "/app/approvals", icon: GavelIcon, nested: true },
+]
+
 // Shown to the roles that are NOT admins: an admin reaches the same screens
 // through Admin Management, and two identical rows in one sidebar is noise.
 const CATALOG: NavItem[] = [
@@ -71,6 +77,7 @@ export function AppSidebar() {
   const { isAdmin, hasRole } = useAuth()
   const { pathname } = useLocation()
   const canSeeSales = hasRole("admin", "sales_rep", "sales_manager")
+  const canSeeApprovals = hasRole("admin", "sales_rep", "sales_manager", "finance")
   // Catalog and warehouse entries are for non-admins only: an admin gets the
   // same screens as tabs inside Admin Management.
   const canSeeCatalog = !isAdmin && hasRole("sales_rep", "sales_manager", "finance")
@@ -110,6 +117,7 @@ export function AppSidebar() {
 
       <SidebarContent>
         {canSeeSales && renderGroup("Sales Operations", PLATFORM)}
+        {canSeeApprovals && renderGroup("Governance", GOVERNANCE)}
         {canSeeCatalog && renderGroup("Catalog", CATALOG)}
         {canManageWarehouses && renderGroup("Operations", OPERATIONS)}
         {isAdmin && renderGroup("Administration", ADMINISTRATION)}

@@ -27,6 +27,8 @@ const DashboardPage = lazy(() => import("@/pages/app/dashboard"));
 const QuotationsPage = lazy(() => import("@/pages/app/quotations"));
 const QuotationDetailPage = lazy(() => import("@/pages/app/quotation-detail"));
 const PipelinePage = lazy(() => import("@/pages/app/pipeline"));
+const ApprovalsPage = lazy(() => import("@/pages/app/approvals"));
+const ApprovalDetailPage = lazy(() => import("@/pages/app/approval-detail"));
 const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
 const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
 const AdminProductDetailPage = lazy(
@@ -129,6 +131,29 @@ export default function App() {
                 element={
                   <RequireRole roles={["admin", "sales_rep", "sales_manager"]}>
                     <PipelinePage />
+                  </RequireRole>
+                }
+              />
+              {/* Approvals are visible to every internal role - a rep must be
+                  able to watch their own quote move - but only the role a step
+                  is waiting on can decide it, which the service enforces. */}
+              <Route
+                path="approvals"
+                element={
+                  <RequireRole
+                    roles={["admin", "sales_rep", "sales_manager", "finance"]}
+                  >
+                    <ApprovalsPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="approvals/:approvalId"
+                element={
+                  <RequireRole
+                    roles={["admin", "sales_rep", "sales_manager", "finance"]}
+                  >
+                    <ApprovalDetailPage />
                   </RequireRole>
                 }
               />

@@ -408,6 +408,62 @@ export interface Quotation {
   approval: Approval | null
 }
 
+export const APPROVAL_DECISIONS = ["approve", "return", "reject"] as const
+export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number]
+
+/** One row of the approvals list. */
+export interface ApprovalListRow {
+  id: string
+  quotation_id: string
+  quotation_number: string
+  customer_name: string
+  customer_tier: string | null
+  round_number: number
+  rule_name: string
+  blended_risk_score: number
+  risk_band: RiskBand
+  quotation_total: number
+  currency: string
+  status: ApprovalStatus
+  current_role: Role | null
+  assigned_to: string | null
+  submitted_by_name: string
+  submitted_at: string
+  decided_at: string | null
+  can_act: boolean
+}
+
+export interface ApprovalCounts {
+  pending: number
+  returned: number
+  approved: number
+  rejected: number
+}
+
+export interface ApprovalListPage extends Page<ApprovalListRow> {
+  counts: ApprovalCounts
+}
+
+/** One line of the audit trail. */
+export interface AuditEntry {
+  id: string
+  action: string
+  actor_name: string
+  reason: string | null
+  context: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface ApprovalDetail extends Approval {
+  quotation_number: string
+  customer_name: string
+  customer_tier: string | null
+  currency: string
+  current_role: Role | null
+  can_act: boolean
+  audit_trail: AuditEntry[]
+}
+
 /** One card or table row on the quotations list. */
 export interface QuotationListRow {
   id: string
