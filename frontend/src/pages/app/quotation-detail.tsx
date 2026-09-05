@@ -1,9 +1,11 @@
 import { useState } from "react"
-import { Link, useParams } from "react-router-dom"
+import { Link, useNavigate, useParams } from "react-router-dom"
 import {
   ArrowLeftIcon,
+  CheckCircle2Icon,
   RefreshCwIcon,
   SendIcon,
+  TruckIcon,
 } from "lucide-react"
 
 import { PageHeader } from "@/components/page-header"
@@ -38,6 +40,7 @@ import {
   useQuotationMutations,
   useSuggestions,
 } from "@/features/quotations/use-quotation"
+import { useConfirmQuotation } from "@/features/fulfillment/use-fulfillment"
 import { QUOTATION_STAGE_LABELS } from "@/types/api"
 
 export default function QuotationDetailPage() {
@@ -45,6 +48,8 @@ export default function QuotationDetailPage() {
   const { data: quotation, isLoading } = useQuotation(quotationId)
   const { products } = useQuotationLookups()
   const mutations = useQuotationMutations(quotationId)
+  const confirm = useConfirmQuotation()
+  const navigate = useNavigate()
 
   // A submitted quotation is read-only: nearly every column on a line is a
   // snapshot precisely so an approver sees what the rep sent, not what the
@@ -108,6 +113,29 @@ export default function QuotationDetailPage() {
                 }
               >
                 <SendIcon /> Submit for approval
+              </Button>
+            ) : null}
+            {/* Approved is the only state a confirmation is legal from: it is
+                what reserves stock and opens the subscriptions. */}
+            {quotation.status === "approved" ? (
+              <Button
+                size="sm"
+                onClick={() =>
+                  confirm.mutate(quotation.id, {
+                    onSuccess: (fulfillment) =>
+                      navigate(`/app/fulfillment/${fulfillment.id}`),
+                  })
+                }
+                disabled={confirm.isPending}
+              >
+                <CheckCircle2Icon /> Confirm order
+              </Button>
+            ) : null}
+            {quotation.status === "confirmed" ? (
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/app/fulfillment">
+                  <TruckIcon /> Fulfillment
+                </Link>
               </Button>
             ) : null}
           </div>

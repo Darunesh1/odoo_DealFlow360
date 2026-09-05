@@ -29,6 +29,10 @@ const QuotationDetailPage = lazy(() => import("@/pages/app/quotation-detail"));
 const PipelinePage = lazy(() => import("@/pages/app/pipeline"));
 const ApprovalsPage = lazy(() => import("@/pages/app/approvals"));
 const ApprovalDetailPage = lazy(() => import("@/pages/app/approval-detail"));
+const FulfillmentPage = lazy(() => import("@/pages/app/fulfillment"));
+const FulfillmentDetailPage = lazy(
+  () => import("@/pages/app/fulfillment-detail")
+);
 const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
 const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
 const AdminProductDetailPage = lazy(
@@ -154,6 +158,29 @@ export default function App() {
                     roles={["admin", "sales_rep", "sales_manager", "finance"]}
                   >
                     <ApprovalDetailPage />
+                  </RequireRole>
+                }
+              />
+              {/* Fulfillment is readable by every internal role; accepting a
+                  split, overriding it and shipping belong to Finance and
+                  Operations, guarded on the routes themselves. */}
+              <Route
+                path="fulfillment"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <FulfillmentPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="fulfillment/:fulfillmentId"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <FulfillmentDetailPage />
                   </RequireRole>
                 }
               />

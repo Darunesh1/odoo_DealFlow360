@@ -4,6 +4,7 @@ import {
   LayoutGridIcon,
   FileTextIcon,
   GavelIcon,
+  TruckIcon,
   ShieldCheckIcon,
   PackageIcon,
   UsersIcon,
@@ -48,6 +49,7 @@ const PLATFORM: NavItem[] = [
 // Every internal role sees approvals; only the waiting step's role can decide.
 const GOVERNANCE: NavItem[] = [
   { title: "Approvals", url: "/app/approvals", icon: GavelIcon, nested: true },
+  { title: "Fulfillment", url: "/app/fulfillment", icon: TruckIcon, nested: true },
 ]
 
 // Shown to the roles that are NOT admins: an admin reaches the same screens

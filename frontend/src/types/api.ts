@@ -408,6 +408,106 @@ export interface Quotation {
   approval: Approval | null
 }
 
+export const FULFILLMENT_STATUSES = [
+  "split_pending",
+  "reserved",
+  "backorder",
+  "partially_shipped",
+  "fulfilled",
+  "cancelled",
+] as const
+export type FulfillmentStatus = (typeof FULFILLMENT_STATUSES)[number]
+
+export const FULFILLMENT_STATUS_LABELS: Record<FulfillmentStatus, string> = {
+  split_pending: "Split Pending",
+  reserved: "Reserved",
+  backorder: "Backorder",
+  partially_shipped: "Partially Shipped",
+  fulfilled: "Fulfilled",
+  cancelled: "Cancelled",
+}
+
+export const ALLOCATION_STATUSES = [
+  "planned",
+  "reserved",
+  "backordered",
+  "partially_shipped",
+  "shipped",
+  "cancelled",
+] as const
+export type AllocationStatus = (typeof ALLOCATION_STATUSES)[number]
+
+export const SHIPMENT_STATUSES = [
+  "planned",
+  "picking",
+  "shipped",
+  "delivered",
+  "cancelled",
+] as const
+export type ShipmentStatus = (typeof SHIPMENT_STATUSES)[number]
+
+export interface Allocation {
+  id: string
+  quotation_line_id: string
+  line_label: string
+  sku: string | null
+  warehouse_id: string
+  warehouse_name: string
+  warehouse_code: string
+  quantity: number
+  quantity_shipped: number
+  status: AllocationStatus
+  estimated_shipping_cost: number
+  expected_restock_date: string | null
+  is_manual: boolean
+}
+
+export interface ShipmentRow {
+  id: string
+  reference: string
+  warehouse_id: string
+  warehouse_name: string
+  status: ShipmentStatus
+  estimated_cost: number
+  actual_cost: number
+  shipped_at: string | null
+  delivered_at: string | null
+  unit_count: number
+}
+
+export interface FulfillmentRow {
+  id: string
+  quotation_id: string
+  quotation_number: string
+  customer_name: string
+  quotation_status: QuotationStatus
+  status: FulfillmentStatus
+  strategy: "suggested" | "manual_override"
+  currency: string
+  estimated_shipping_cost: number
+  estimated_shipment_count: number
+  warehouse_names: string[]
+  has_backorder: boolean
+  requested_delivery_date: string | null
+  accepted_at: string | null
+  created_at: string
+}
+
+export interface FulfillmentDetail extends FulfillmentRow {
+  allocations: Allocation[]
+  shipments: ShipmentRow[]
+  can_consolidate: boolean
+  consolidated_at: string | null
+}
+
+export interface OverrideRowInput {
+  quotation_line_id: string
+  warehouse_id: string
+  quantity: number
+  status?: AllocationStatus
+  estimated_shipping_cost?: number
+}
+
 export const APPROVAL_DECISIONS = ["approve", "return", "reject"] as const
 export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number]
 
