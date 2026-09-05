@@ -286,6 +286,10 @@ class WarehouseBase(BaseModel):
     code: str
     name: str
     address: Optional[str] = None
+    # Entered, never derived - see the model docstring.
+    shipping_base_cost: float = 0
+    shipping_cost_per_unit: float = 0
+    default_lead_time_days: int = 7
     is_active: bool = True
 
 
@@ -299,6 +303,9 @@ class WarehouseCreate(BaseModel):
     code: str = Field(min_length=1, max_length=16)
     name: str = Field(min_length=1, max_length=255)
     address: Optional[str] = None
+    shipping_base_cost: float = Field(default=0, ge=0)
+    shipping_cost_per_unit: float = Field(default=0, ge=0)
+    default_lead_time_days: int = Field(default=7, ge=0, le=365)
     is_active: bool = True
 
 
@@ -306,6 +313,9 @@ class WarehouseUpdate(BaseModel):
     code: Optional[str] = Field(default=None, min_length=1, max_length=16)
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     address: Optional[str] = None
+    shipping_base_cost: Optional[float] = Field(default=None, ge=0)
+    shipping_cost_per_unit: Optional[float] = Field(default=None, ge=0)
+    default_lead_time_days: Optional[int] = Field(default=None, ge=0, le=365)
     is_active: Optional[bool] = None
 
 

@@ -17,6 +17,8 @@ from app.services.user_service import (
 from app.services import (
     approval_service,
     audit_service,
+    fulfillment_service,
+    order_service,
     pricing_service,
     upsell_service,
     variant_service,

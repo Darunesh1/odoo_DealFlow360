@@ -10,15 +10,18 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.base import TimestampMixin
+from app.models.base import MONEY, TimestampMixin
 
 
 class Warehouse(Base, TimestampMixin):
-    """A stocking location: where it is, and what it holds.
+    """A stocking location: where it is, what it holds, and what shipping from
+    it costs.
 
-    Carries no shipping cost configuration. The split planner therefore
-    minimises the NUMBER of shipments and prefers the warehouse with deeper
-    stock, rather than a monetary cost.
+    The two cost figures are TYPED BY A HUMAN - an admin or Finance - not
+    derived. There is no reliable way to compute a real shipping rate from
+    what this system knows, and a guessed number on the fulfillment screen
+    would be worse than an entered one. The planner uses them to break ties,
+    and Finance can override the total on the split itself.
     """
 
     __tablename__ = "warehouses"
@@ -29,6 +32,13 @@ class Warehouse(Base, TimestampMixin):
     code: Mapped[str] = mapped_column(String(16), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Flat cost of getting one shipment out of this warehouse.
+    shipping_base_cost: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
+    # Plus this much per unit in it.
+    shipping_cost_per_unit: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
+    # How long a backorder here is expected to take to clear, used to fill in
+    # an allocation's expected restock date.
+    default_lead_time_days: Mapped[int] = mapped_column(Integer, default=7, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     stock: Mapped[list["StockItem"]] = relationship(

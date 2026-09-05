@@ -104,9 +104,12 @@ async def seed_demo_data() -> None:
         "Wireless Mouse": (12.0, 35.0),
         "Care Plan 2yr": (18.0, 46.0),
     }
+    # (code, name, address, shipping base, per unit, lead time days). The two
+    # cost figures are what an admin or Finance would type; the planner uses
+    # them to break ties and the split screen shows the arithmetic.
     warehouses = [
-        ("MAIN", "Main Warehouse", "Chennai, India"),
-        ("EAST", "East Depot", "Ahmedabad, India"),
+        ("MAIN", "Main Warehouse", "Chennai, India", 25.0, 0.70, 5),
+        ("EAST", "East Depot", "Ahmedabad, India", 18.0, 0.90, 9),
     ]
     customers = [
         ("Acme Corp", "Gold", "acme@dealflow360.com"),
@@ -154,11 +157,19 @@ async def seed_demo_data() -> None:
 
         # --- warehouses -------------------------------------------------------- #
         warehouse_by_code: dict[str, Warehouse] = {}
-        for code, name, address in warehouses:
+        for code, name, address, base, per_unit, lead in warehouses:
             warehouse = await catalog_service.get_warehouse_by_code(session, code)
             if warehouse is None:
                 warehouse = await catalog_service.create_warehouse(
-                    session, WarehouseCreate(code=code, name=name, address=address)
+                    session,
+                    WarehouseCreate(
+                        code=code,
+                        name=name,
+                        address=address,
+                        shipping_base_cost=base,
+                        shipping_cost_per_unit=per_unit,
+                        default_lead_time_days=lead,
+                    ),
                 )
             warehouse_by_code[code] = warehouse
 
