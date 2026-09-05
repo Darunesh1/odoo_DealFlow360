@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     # deployment never gets anything beyond the administrator above.
     SEED_DEMO_USERS: bool = True
 
+    # Upsell suggestions below this margin percentage are suppressed entirely
+    # (spec A6's "minimum margin thresholds"). A rep should not have to judge
+    # which suggestions are safe to accept.
+    MIN_UPSELL_MARGIN_PERCENT: float = 10.0
+
     # SMTP Configuration (Optional)
     SMTP_HOST: Optional[str] = None
     SMTP_PORT: Optional[int] = None

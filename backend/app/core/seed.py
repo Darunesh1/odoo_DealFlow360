@@ -29,7 +29,9 @@ async def seed_demo_data() -> None:
     from app.models.catalog import (
         CategoryDiscountLimit,
         Currency,
+        PairingSource,
         Product,
+        ProductPairing,
         ProductUnit,
         ProductVariant,
         RecurringInterval,
@@ -70,12 +72,26 @@ async def seed_demo_data() -> None:
             "Docking Station", "Hardware", ProductUnit.EACH, 15.0, None,
             [("Color", ["Black", "Silver", "White"])],
         ),
+        ("Wireless Mouse", "Hardware", ProductUnit.EACH, 15.0, None, []),
         ("Onsite Setup Service", "Services", ProductUnit.EACH, 10.0, None, []),
         ("Extended Warranty", "Services", ProductUnit.EACH, 10.0, None, []),
         (
             "Care Plan 2yr", "Subscription", ProductUnit.RECURRING, 0.0,
             RecurringInterval.MONTHLY, [],
         ),
+    ]
+    # The upsell panel on screen 4 shows exactly these three against a laptop.
+    # Promotion drives the "Promo" tag and lifts a suggestion to the top.
+    promoted = {"Care Plan 2yr": "12% off this quarter"}
+    # (product, suggested product, weight). Weight stands in for co-purchase
+    # frequency until there is enough sales history to compute one.
+    pairings = [
+        ("Laptop Pro 14", "Docking Station", 0.82),
+        ("Laptop Pro 14", "Wireless Mouse", 0.74),
+        ("Laptop Pro 14", "Care Plan 2yr", 0.61),
+        ("Laptop Pro 14", "Onsite Setup Service", 0.45),
+        ("Docking Station", "Wireless Mouse", 0.55),
+        ("Onsite Setup Service", "Extended Warranty", 0.5),
     ]
     # The only two numbers per product. Every tier and currency price is
     # derived from the base price by rebuild_variant_prices.
@@ -85,6 +101,7 @@ async def seed_demo_data() -> None:
         "Docking Station": (110.0, 180.0),
         "Onsite Setup Service": (180.0, 450.0),
         "Extended Warranty": (60.0, 180.0),
+        "Wireless Mouse": (12.0, 35.0),
         "Care Plan 2yr": (18.0, 46.0),
     }
     warehouses = [
@@ -162,6 +179,8 @@ async def seed_demo_data() -> None:
                     is_subscription=interval is not None,
                     recurring_interval=interval,
                     has_variants=bool(attributes),
+                    is_promoted=name in promoted,
+                    promotion_label=promoted.get(name),
                     attributes=[
                         VariantAttributeInput(name=attribute, values=values)
                         for attribute, values in attributes
@@ -202,6 +221,34 @@ async def seed_demo_data() -> None:
                     )
                 )
             await variant_service.save_variant_matrix(session, product, rows)
+
+        # --- upsell pairings --------------------------------------------------- #
+        by_name = {
+            product.name: product
+            for product in (await session.execute(select(Product))).scalars().all()
+        }
+        for source_name, suggested_name, weight in pairings:
+            source, suggested = by_name.get(source_name), by_name.get(suggested_name)
+            if source is None or suggested is None:
+                continue
+            exists = (
+                await session.execute(
+                    select(ProductPairing).where(
+                        ProductPairing.product_id == source.id,
+                        ProductPairing.suggested_product_id == suggested.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if exists is None:
+                session.add(
+                    ProductPairing(
+                        product_id=source.id,
+                        suggested_product_id=suggested.id,
+                        weight=weight,
+                        source=PairingSource.CO_PURCHASE,
+                    )
+                )
+        await session.commit()
 
         # --- customers --------------------------------------------------------- #
         for name, tier_name, email in customers:
