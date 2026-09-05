@@ -408,6 +408,104 @@ export interface Quotation {
   approval: Approval | null
 }
 
+export const ALERT_TYPES = [
+  "stalled_deal",
+  "discount_anomaly",
+  "delivery_slippage",
+] as const
+export type AlertType = (typeof ALERT_TYPES)[number]
+
+export const ALERT_TYPE_LABELS: Record<AlertType, string> = {
+  stalled_deal: "Stalled deal",
+  discount_anomaly: "Discount anomaly",
+  delivery_slippage: "Delivery slippage",
+}
+
+export const ALERT_STATUSES = ["open", "nudged", "escalated", "resolved"] as const
+export type AlertStatus = (typeof ALERT_STATUSES)[number]
+
+export interface DealAlert {
+  id: string
+  quotation_id: string
+  quotation_number: string
+  customer_name: string
+  owner_name: string | null
+  alert_type: AlertType
+  severity: RiskBand
+  detail: string
+  status: AlertStatus
+  flagged_at: string
+  acted_at: string | null
+  action_note: string | null
+}
+
+export interface AlertCounts {
+  stalled_deals: number
+  discount_anomalies: number
+  delivery_slippage: number
+}
+
+export interface ActivityEntry {
+  id: string
+  actor_name: string
+  action: string
+  entity_type: string
+  entity_id: string
+  reason: string | null
+  context: Record<string, unknown> | null
+  created_at: string
+}
+
+export interface DashboardData {
+  pending_approvals: number
+  open_quotations: number
+  at_risk_deals: number
+  pipeline_value: number
+  recent_activity: ActivityEntry[]
+}
+
+export interface NamedFigure {
+  name: string
+  units: number
+  revenue: number
+}
+
+export interface DiscountFigure {
+  name: string
+  average_discount: number
+  lines: number
+}
+
+export interface RepFigure {
+  name: string
+  revenue: number
+  margin: number
+  average_discount: number
+}
+
+export interface CategoryFigure {
+  name: string
+  revenue: number
+  margin: number
+}
+
+export interface ReportData {
+  quotes_created: number
+  quotes_confirmed: number
+  conversion_rate: number
+  orders: number
+  revenue: number
+  margin: number
+  average_discount: number
+  units_sold: number
+  average_approval_hours: number | null
+  top_upsold: NamedFigure[]
+  best_selling: NamedFigure[]
+  most_discounted: DiscountFigure[]
+  by_rep: RepFigure[]
+  by_category: CategoryFigure[]
+}
+
 // --------------------------------------------------------------------------- //
 // Customer portal. A separate shape from the internal Quotation on purpose:
 // there is nowhere here to put cost, margin or the risk score.

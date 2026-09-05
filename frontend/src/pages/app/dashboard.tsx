@@ -1,17 +1,14 @@
-import { useMutation } from "@tanstack/react-query"
+import { Link } from "react-router-dom"
 import {
   ArrowRightIcon,
-  BookOpenIcon,
-  CircleCheckIcon,
-  MailWarningIcon,
-  ShieldCheckIcon,
-  UserRoundIcon,
+  FileTextIcon,
+  GavelIcon,
+  PlusIcon,
+  TrendingUpIcon,
+  TriangleAlertIcon,
 } from "lucide-react"
-import { Link } from "react-router-dom"
-import { toast } from "sonner"
 
 import { PageHeader } from "@/components/page-header"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -20,163 +17,181 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { API_DOCS_URL, APP_NAME } from "@/config"
 import { useAuth } from "@/features/auth/use-auth"
-import { ROLE_LABELS } from "@/types/api"
-import { api, errorMessage } from "@/lib/api"
+import { useDashboard } from "@/features/analytics/use-analytics"
+import { money, relativeTime } from "@/features/quotations/format"
+import type { ActivityEntry } from "@/types/api"
 
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
-  day: "numeric",
-  month: "long",
-  year: "numeric",
-})
-
-/** Facts drawn from the signed-in account, not placeholder metrics. */
-function AccountFacts() {
-  const { user } = useAuth()
-  if (!user) return null
-
-  const facts = [
-    { label: "Member since", value: dateFormatter.format(new Date(user.created_at)) },
-    {
-      label: user.roles.length === 1 ? "Role" : "Roles",
-      value: user.roles.map((role) => ROLE_LABELS[role]).join(", ") || "None assigned",
-    },
-    { label: "Email status", value: user.is_verified ? "Verified" : "Unverified" },
-    { label: "Account ID", value: user.id.slice(0, 8), mono: true },
-  ]
-
-  return (
-    <div className="grid gap-px overflow-hidden rounded-lg border bg-border sm:grid-cols-2 lg:grid-cols-4">
-      {facts.map((fact) => (
-        <div key={fact.label} className="bg-card p-4">
-          <p className="label-mono text-muted-foreground">{fact.label}</p>
-          <p
-            className={
-              fact.mono
-                ? "mt-1.5 font-mono text-sm font-medium"
-                : "mt-1.5 text-sm font-medium"
-            }
-          >
-            {fact.value}
-          </p>
-        </div>
-      ))}
-    </div>
-  )
+/** Where an audit entry points, so a row in the feed is clickable. */
+function entityHref(entry: ActivityEntry) {
+  switch (entry.entity_type) {
+    case "quotation":
+      return `/app/quotations/${entry.entity_id}`
+    case "approval":
+      return `/app/approvals/${entry.entity_id}`
+    case "invoice":
+      return `/app/invoices/${entry.entity_id}`
+    case "fulfillment":
+      return `/app/fulfillment/${entry.entity_id}`
+    default:
+      return null
+  }
 }
 
-function VerificationNotice() {
-  const { user } = useAuth()
-
-  const resend = useMutation({
-    mutationFn: async () => {
-      await api.post("/auth/resend-verification", { email: user?.email })
-    },
-    onSuccess: () => toast.success("Verification email sent. Check your inbox."),
-    onError: (error) => toast.error(errorMessage(error, "Could not send the email.")),
-  })
-
-  if (!user || user.is_verified) return null
-
-  return (
-    <Card className="border-brass/40 bg-brass/5">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <MailWarningIcon className="size-4 text-brass" />
-          Confirm your email address
-        </CardTitle>
-        <CardDescription>
-          We sent a link to {user.email}. Confirming it keeps your account recoverable if
-          you forget your password.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Button variant="outline" onClick={() => resend.mutate()} disabled={resend.isPending}>
-          {resend.isPending ? "Sending…" : "Send the link again"}
-        </Button>
-      </CardContent>
-    </Card>
-  )
+function describe(entry: ActivityEntry) {
+  const number =
+    typeof entry.context?.quotation_number === "string"
+      ? entry.context.quotation_number
+      : null
+  const action = entry.action.replace(/_/g, " ")
+  return `${entry.actor_name} ${action}${number ? ` ${number}` : ""}`
 }
-
-const NEXT_STEPS = [
-  {
-    title: "Complete your profile",
-    description: "Set the name that appears across the app.",
-    to: "/app/profile",
-    icon: UserRoundIcon,
-  },
-  {
-    title: "Secure your account",
-    description: "Change your password and pick a theme.",
-    to: "/app/settings",
-    icon: ShieldCheckIcon,
-  },
-]
 
 export default function DashboardPage() {
-  const { user, isAdmin } = useAuth()
-  const firstName = user?.full_name?.trim().split(" ")[0]
+  const { user, hasRole } = useAuth()
+  const { data, isLoading } = useDashboard()
+  const canQuote = hasRole("admin", "sales_rep", "sales_manager")
 
   return (
-    <>
+    <div className="space-y-6">
       <PageHeader
-        eyebrow="Dashboard"
-        title={firstName ? `Welcome back, ${firstName}` : "Welcome back"}
-        description={`Your ${APP_NAME} account at a glance. Replace this screen with whatever your product does.`}
+        eyebrow="Sales"
+        title={`Welcome back${user?.full_name ? `, ${user.full_name.split(" ")[0]}` : ""}`}
+        description="Everything in flight, and what needs a decision today."
+        actions={
+          canQuote ? (
+            <Button size="sm" asChild>
+              <Link to="/app/quotations">
+                <PlusIcon /> New quotation
+              </Link>
+            </Button>
+          ) : null
+        }
       />
 
-      <VerificationNotice />
-      <AccountFacts />
-
-      <div className="grid gap-4 md:grid-cols-2">
-        {NEXT_STEPS.map((step) => (
-          <Card key={step.to} className="transition-colors hover:border-primary/40">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <step.icon className="size-4 text-primary" />
-                {step.title}
-              </CardTitle>
-              <CardDescription>{step.description}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild variant="ghost" size="sm" className="-ml-2">
-                <Link to={step.to}>
-                  Open
-                  <ArrowRightIcon className="size-4" />
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        ))}
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Tile
+          label="Pending approvals"
+          value={data?.pending_approvals}
+          hint="waiting on a decision"
+          to="/app/approvals"
+          icon={GavelIcon}
+          loading={isLoading}
+        />
+        <Tile
+          label="Open quotations"
+          value={data?.open_quotations}
+          hint="active deals"
+          to="/app/quotations"
+          icon={FileTextIcon}
+          loading={isLoading}
+        />
+        <Tile
+          label="At-risk deals"
+          value={data?.at_risk_deals}
+          hint="flagged by deal health"
+          to="/app/deal-health"
+          icon={TriangleAlertIcon}
+          loading={isLoading}
+          alarming={Boolean(data?.at_risk_deals)}
+        />
+        <Tile
+          label="Pipeline value"
+          value={data ? money(data.pipeline_value) : undefined}
+          hint="not yet confirmed"
+          to="/app/pipeline"
+          icon={TrendingUpIcon}
+          loading={isLoading}
+        />
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <BookOpenIcon className="size-4 text-primary" />
-            Build the next screen
-          </CardTitle>
+          <CardTitle className="text-base">Recent activity</CardTitle>
           <CardDescription>
-            Every route this app calls is documented and testable in the interactive API
-            reference.
+            Every submission, decision, despatch and payment, newest first.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-wrap items-center gap-3">
-          <Button asChild variant="outline" size="sm">
-            <a href={API_DOCS_URL} target="_blank" rel="noreferrer">
-              Open API reference
-            </a>
-          </Button>
-          {isAdmin && (
-            <Badge variant="secondary" className="gap-1.5">
-              <CircleCheckIcon className="size-3" />
-              Admin tools unlocked
-            </Badge>
+        <CardContent className="space-y-2">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading…</p>
+          ) : (data?.recent_activity ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nothing has happened yet. Build a quotation and it will show up
+              here.
+            </p>
+          ) : (
+            (data?.recent_activity ?? []).map((entry) => {
+              const href = entityHref(entry)
+              const body = (
+                <div className="flex items-start justify-between gap-3 rounded-lg border p-3 transition-colors hover:border-foreground/25">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{describe(entry)}</p>
+                    {entry.reason ? (
+                      <p className="truncate text-sm text-muted-foreground">
+                        {entry.reason}
+                      </p>
+                    ) : null}
+                  </div>
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {relativeTime(entry.created_at)}
+                  </span>
+                </div>
+              )
+              return href ? (
+                <Link key={entry.id} to={href} className="block">
+                  {body}
+                </Link>
+              ) : (
+                <div key={entry.id}>{body}</div>
+              )
+            })
           )}
         </CardContent>
       </Card>
-    </>
+    </div>
+  )
+}
+
+function Tile({
+  label,
+  value,
+  hint,
+  to,
+  icon: Icon,
+  loading,
+  alarming,
+}: {
+  label: string
+  value?: number | string
+  hint: string
+  to: string
+  icon: typeof GavelIcon
+  loading: boolean
+  alarming?: boolean
+}) {
+  return (
+    <Link to={to}>
+      <Card className="h-full transition-colors hover:border-foreground/25">
+        <CardContent className="space-y-1">
+          <div className="flex items-center justify-between">
+            <p className="label-mono text-muted-foreground">{label}</p>
+            <Icon
+              className={
+                alarming
+                  ? "size-4 text-amber-600 dark:text-amber-400"
+                  : "size-4 text-muted-foreground"
+              }
+            />
+          </div>
+          <p className="font-mono text-2xl tabular-nums">
+            {loading ? "—" : (value ?? 0)}
+          </p>
+          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+            {hint} <ArrowRightIcon className="size-3" />
+          </p>
+        </CardContent>
+      </Card>
+    </Link>
   )
 }

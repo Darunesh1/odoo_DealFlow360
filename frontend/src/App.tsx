@@ -43,6 +43,8 @@ const PortalQuotationDetailPage = lazy(
   () => import("@/pages/portal/quotation-detail")
 );
 const PortalInvoicesPage = lazy(() => import("@/pages/portal/invoices"));
+const DealHealthPage = lazy(() => import("@/pages/app/deal-health"));
+const ReportsPage = lazy(() => import("@/pages/app/reports"));
 const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
 const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
 const AdminProductDetailPage = lazy(
@@ -233,6 +235,26 @@ export default function App() {
                     roles={["admin", "finance", "sales_manager", "sales_rep"]}
                   >
                     <InvoiceDetailPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="deal-health"
+                element={
+                  <RequireRole
+                    roles={["admin", "sales_rep", "sales_manager", "finance"]}
+                  >
+                    <DealHealthPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="reports"
+                element={
+                  <RequireRole
+                    roles={["admin", "sales_rep", "sales_manager", "finance"]}
+                  >
+                    <ReportsPage />
                   </RequireRole>
                 }
               />

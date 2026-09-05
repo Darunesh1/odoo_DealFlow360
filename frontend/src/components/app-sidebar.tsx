@@ -7,6 +7,8 @@ import {
   TruckIcon,
   RepeatIcon,
   ReceiptIcon,
+  TriangleAlertIcon,
+  ChartColumnIcon,
   ShieldCheckIcon,
   PackageIcon,
   UsersIcon,
@@ -57,6 +59,11 @@ const GOVERNANCE: NavItem[] = [
 const BILLING: NavItem[] = [
   { title: "Subscriptions", url: "/app/subscriptions", icon: RepeatIcon, nested: true },
   { title: "Invoices", url: "/app/invoices", icon: ReceiptIcon, nested: true },
+]
+
+const INSIGHT: NavItem[] = [
+  { title: "Deal Health", url: "/app/deal-health", icon: TriangleAlertIcon, nested: true },
+  { title: "Reports", url: "/app/reports", icon: ChartColumnIcon, nested: true },
 ]
 
 // Shown to the roles that are NOT admins: an admin reaches the same screens
@@ -128,6 +135,7 @@ export function AppSidebar() {
         {canSeeSales && renderGroup("Sales Operations", PLATFORM)}
         {canSeeApprovals && renderGroup("Governance", GOVERNANCE)}
         {canSeeApprovals && renderGroup("Billing", BILLING)}
+        {canSeeApprovals && renderGroup("Insight", INSIGHT)}
         {canSeeCatalog && renderGroup("Catalog", CATALOG)}
         {canManageWarehouses && renderGroup("Operations", OPERATIONS)}
         {isAdmin && renderGroup("Administration", ADMINISTRATION)}
