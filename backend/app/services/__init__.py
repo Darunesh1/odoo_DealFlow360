@@ -1,6 +1,8 @@
 from app.services.user_service import (
+    accept_invite,
+    apply_roles,
     count_users,
-    create_user,
+    create_invited_user,
     delete_user,
     get_user_by_email,
     get_user_by_id,
@@ -13,8 +15,10 @@ from app.services.user_service import (
 )
 
 __all__ = [
+    "accept_invite",
+    "apply_roles",
     "count_users",
-    "create_user",
+    "create_invited_user",
     "delete_user",
     "get_user_by_email",
     "get_user_by_id",

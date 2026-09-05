@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Awaitable, Callable
 from fastapi import Depends, HTTPException, Query, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -7,7 +8,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.redis import get_redis
 from app.core.security import ACCESS_TOKEN_TYPE, decode_token, parse_uuid
-from app.models.user import User
+from app.models.user import Role, User
 from app.schemas.token import TokenPayload
 from app.services import get_user_by_id
 
@@ -71,16 +72,29 @@ async def get_current_verified_user(
     return current_user
 
 
-async def get_current_active_superuser(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """FastAPI dependency to verify that the logged-in user is a superuser."""
-    if not current_user.is_superuser:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="The user does not have enough privileges",
-        )
-    return current_user
+def require_roles(*roles: Role) -> Callable[..., Awaitable[User]]:
+    """Builds a dependency admitting users who hold at least one of `roles`.
+
+    Roles are additive, so a user who is both a Sales Manager and Finance
+    satisfies a guard naming either.
+    """
+    allowed = set(roles)
+
+    async def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if not allowed & set(current_user.roles):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="The user does not have enough privileges",
+            )
+        return current_user
+
+    return dependency
+
+
+# Built once at import time so a router level guard and a route level one are
+# the same object, and FastAPI's dependency cache resolves them together.
+# Add a shortcut when its first route needs it, not before.
+require_admin = require_roles(Role.ADMIN)
 
 
 @dataclass
@@ -113,10 +127,11 @@ def get_pagination(
 
 __all__ = [
     "Pagination",
-    "get_current_active_superuser",
     "get_current_user",
     "get_current_verified_user",
     "get_db",
     "get_pagination",
     "get_redis",
+    "require_admin",
+    "require_roles",
 ]

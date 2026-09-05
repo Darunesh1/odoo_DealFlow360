@@ -3,6 +3,8 @@ from typing import Annotated, Optional
 import uuid
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
+from app.models.user import Role
+
 
 def _validate_password_strength(value: str) -> str:
     """Requires passwords to mix letters and digits. Length is enforced by Field."""
@@ -21,6 +23,15 @@ Password = Annotated[
 ]
 
 
+def _unique_roles(values: list[Role]) -> list[Role]:
+    """Drops repeats while preserving order; a duplicate would break the composite key."""
+    return list(dict.fromkeys(values))
+
+
+# Every role grant goes through here, so a user can never end up with none.
+Roles = Annotated[list[Role], Field(min_length=1), AfterValidator(_unique_roles)]
+
+
 class UserBase(BaseModel):
     """Base fields shared across User schemas."""
 
@@ -29,23 +40,30 @@ class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = Field(default=None, max_length=255)
     is_active: bool = True
-    is_superuser: bool = False
     is_verified: bool = False
+    roles: list[Role] = Field(default_factory=list)
 
 
-class UserCreate(BaseModel):
-    """Schema for user registration / signup."""
+class UserInvite(BaseModel):
+    """Schema an administrator submits to create an account and invite its owner."""
 
     email: EmailStr
-    password: Password
     full_name: Optional[str] = Field(default=None, max_length=255)
+    roles: Roles
+
+
+class InviteAccept(BaseModel):
+    """Payload an invitee submits to set their first password."""
+
+    token: str
+    new_password: Password
 
 
 class UserUpdateMe(BaseModel):
     """Fields the owner of an account is allowed to change about themselves.
 
-    Deliberately excludes is_active / is_superuser / is_verified: exposing those
-    here would let any authenticated user promote themselves to superuser.
+    Deliberately excludes roles / is_active / is_verified: exposing any of them
+    here would let any authenticated user grant themselves the admin role.
     Password changes go through /auth/change-password instead.
     """
 
@@ -60,8 +78,9 @@ class UserUpdateAdmin(BaseModel):
     password: Optional[Password] = None
     full_name: Optional[str] = Field(default=None, max_length=255)
     is_active: Optional[bool] = None
-    is_superuser: Optional[bool] = None
     is_verified: Optional[bool] = None
+    # A full replacement, not a merge: whatever is sent becomes the user's roles.
+    roles: Optional[Roles] = None
 
 
 class UserRead(UserBase):

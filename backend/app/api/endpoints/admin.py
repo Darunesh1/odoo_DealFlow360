@@ -5,15 +5,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     Pagination,
-    get_current_active_superuser,
     get_db,
     get_pagination,
+    require_admin,
 )
-from app.models.user import User
+from app.core.security import create_invite_token, is_password_usable
+from app.models.user import Role, User
 from app.schemas.common import Message, Page
-from app.schemas.user import UserRead, UserUpdateAdmin
+from app.schemas.user import UserInvite, UserRead, UserUpdateAdmin
 from app.services import (
     count_users,
+    create_invited_user,
     delete_user,
     get_user_by_email,
     get_user_by_id,
@@ -21,9 +23,10 @@ from app.services import (
     normalize_email,
     update_user,
 )
+from app.tasks.email_tasks import send_invite_email
 
-# Every route in this module requires a superuser.
-router = APIRouter(dependencies=[Depends(get_current_active_superuser)])
+# Every route in this module requires the admin role.
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 async def _get_user_or_404(db: AsyncSession, user_id: uuid.UUID) -> User:
@@ -35,6 +38,56 @@ async def _get_user_or_404(db: AsyncSession, user_id: uuid.UUID) -> User:
             detail="User not found",
         )
     return user
+
+
+@router.post("/users", response_model=UserRead, status_code=status.HTTP_201_CREATED)
+async def invite_user(user_in: UserInvite, db: AsyncSession = Depends(get_db)) -> Any:
+    """Creates an account with no usable password and emails its owner a setup link.
+
+    This replaces public signup: an administrator decides who exists and what
+    roles they hold, and the invitee chooses their own password.
+    """
+    if await get_user_by_email(db, email=user_in.email):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A user with this email address already exists.",
+        )
+
+    new_user = await create_invited_user(
+        db,
+        email=user_in.email,
+        full_name=user_in.full_name,
+        roles=user_in.roles,
+    )
+    send_invite_email.delay(
+        email=new_user.email,
+        token=create_invite_token(new_user.id),
+        full_name=new_user.full_name or "",
+    )
+    return new_user
+
+
+@router.post("/users/{user_id}/resend-invite", response_model=Message)
+async def resend_invite(user_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Any:
+    """Issues a fresh invitation link to someone who has not accepted theirs.
+
+    Unlike the public email routes this does not hide whether the account
+    exists: the caller is an administrator who can already list every account.
+    """
+    user = await _get_user_or_404(db, user_id)
+
+    if is_password_usable(user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This user has already accepted their invitation.",
+        )
+
+    send_invite_email.delay(
+        email=user.email,
+        token=create_invite_token(user.id),
+        full_name=user.full_name or "",
+    )
+    return Message(message="Invitation resent.")
 
 
 @router.get("/users", response_model=Page[UserRead])
@@ -73,7 +126,7 @@ async def update_user_by_id(
     user_id: uuid.UUID,
     user_in: UserUpdateAdmin,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_superuser),
+    current_user: User = Depends(require_admin),
 ) -> Any:
     """Updates any field of any user account."""
     user = await _get_user_or_404(db, user_id)
@@ -86,12 +139,13 @@ async def update_user_by_id(
                 detail="A user with this email address already exists.",
             )
 
-    # Guard against an admin locking themselves out of the admin area.
+    # Guard against an admin locking themselves out of the admin area. roles is
+    # a full replacement, so omitting ADMIN from the list is removing it.
     if user.id == current_user.id:
-        if user_in.is_superuser is False:
+        if user_in.roles is not None and Role.ADMIN not in user_in.roles:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="You cannot remove your own superuser privileges.",
+                detail="You cannot remove your own administrator role.",
             )
         if user_in.is_active is False:
             raise HTTPException(
@@ -106,7 +160,7 @@ async def update_user_by_id(
 async def delete_user_by_id(
     user_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_active_superuser),
+    current_user: User = Depends(require_admin),
 ) -> Any:
     """Permanently deletes a user account."""
     if user_id == current_user.id:
