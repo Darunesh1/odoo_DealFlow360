@@ -36,7 +36,7 @@ import { api, errorMessage } from "@/lib/api"
 import type {
   Approval,
   Customer,
-  PriceList,
+  Currency,
   Product,
   StockItem,
   Quotation,
@@ -110,7 +110,7 @@ function LineEditor({
         <div className="space-y-1">
           <p className="font-medium">{line.product_name}</p>
           <p className="text-xs text-muted-foreground">
-            {line.category_name ?? "—"} · {line.source}
+            {line.category ?? "—"} · {line.source}
           </p>
           <p className="text-xs text-muted-foreground">
             {line.warehouse_name
@@ -176,12 +176,13 @@ export default function QuotationsPage() {
   const [isCreatingNew, setIsCreatingNew] = useState(false)
 
   const [customerId, setCustomerId] = useState("")
-  const [priceListId, setPriceListId] = useState("")
+  const [currency, setCurrency] = useState("USD")
   const [recipientEmail, setRecipientEmail] = useState("")
   const [orderDiscount, setOrderDiscount] = useState("0")
   const [notes, setNotes] = useState("")
 
   const [newLineProductId, setNewLineProductId] = useState("")
+  const [newLineVariantId, setNewLineVariantId] = useState("")
   const [newLineQuantity, setNewLineQuantity] = useState("1")
   const [newLineDiscount, setNewLineDiscount] = useState("0")
 
@@ -197,9 +198,9 @@ export default function QuotationsPage() {
     queryKey: ["lookups", "products"],
     queryFn: async () => (await api.get<Product[]>("/lookups/products")).data,
   })
-  const priceListsQuery = useQuery({
-    queryKey: ["lookups", "price-lists"],
-    queryFn: async () => (await api.get<PriceList[]>("/lookups/price-lists")).data,
+  const currenciesQuery = useQuery({
+    queryKey: ["lookups", "currencies"],
+    queryFn: async () => (await api.get<Currency[]>("/lookups/currencies")).data,
   })
 
   const selectedQuotationQuery = useQuery({
@@ -212,23 +213,28 @@ export default function QuotationsPage() {
   const quotations = quotationsQuery.data ?? []
   const customers = customersQuery.data ?? []
   const products = productsQuery.data ?? []
-  const priceLists = priceListsQuery.data ?? []
+  const currencies = currenciesQuery.data ?? []
   const selectedQuotation = selectedQuotationQuery.data ?? null
-  const selectedProductStockQuery = useQuery({
-    queryKey: ["lookups", "product-stock", newLineProductId],
+  const selectedProduct = useMemo(
+    () => products.find((product) => product.id === newLineProductId) ?? null,
+    [products, newLineProductId]
+  )
+  const variantStockQuery = useQuery({
+    queryKey: ["lookups", "variant-stock", newLineVariantId],
     queryFn: async () =>
-      (await api.get<StockItem[]>(`/lookups/products/${newLineProductId}/stock`)).data,
-    enabled: Boolean(newLineProductId),
+      (await api.get<StockItem[]>(`/lookups/variants/${newLineVariantId}/stock`)).data,
+    enabled: Boolean(newLineVariantId),
   })
-  const selectedProductStock = selectedProductStockQuery.data ?? []
-  const selectedWarehouse = selectedProductStock[0] ?? null
+  const variantStock = variantStockQuery.data ?? []
+  const totalAvailable = variantStock.reduce(
+    (sum, item) => sum + item.quantity_available,
+    0
+  )
   const requestedQuantity = Number(newLineQuantity) || 0
+  // Short stock is a warning, not a block: splitting the order across
+  // warehouses and backordering the rest is what fulfillment is for.
   const canAddLine =
-    Boolean(selectedQuotationId) &&
-    Boolean(newLineProductId) &&
-    Boolean(selectedWarehouse) &&
-    requestedQuantity > 0 &&
-    requestedQuantity <= (selectedWarehouse?.quantity_available ?? 0)
+    Boolean(selectedQuotationId) && Boolean(newLineVariantId) && requestedQuantity > 0
 
   const selectedCustomer = useMemo(
     () => customers.find((customer) => customer.id === customerId) ?? null,
@@ -246,14 +252,26 @@ export default function QuotationsPage() {
       return
     }
     setCustomerId(quote.customer_id)
-    setPriceListId(quote.price_list_id ?? "")
+    setCurrency(quote.currency)
     setRecipientEmail(quote.recipient_email ?? quote.customer.contact_email ?? "")
     setOrderDiscount(String(quote.order_discount_percent))
     setNotes(quote.notes ?? "")
     setNewLineProductId("")
+    setNewLineVariantId("")
     setNewLineQuantity("1")
     setNewLineDiscount("0")
   }, [selectedQuotation])
+
+  // A product with one hidden Default variant needs no second picker.
+  useEffect(() => {
+    if (!selectedProduct) {
+      setNewLineVariantId("")
+      return
+    }
+    setNewLineVariantId(
+      selectedProduct.variants.length === 1 ? selectedProduct.variants[0].id : ""
+    )
+  }, [selectedProduct])
 
   useEffect(() => {
     if (!selectedQuotationId && customerId && !recipientEmail) {
@@ -272,7 +290,7 @@ export default function QuotationsPage() {
     mutationFn: async () => {
       const body: QuotationCreateInput | QuotationUpdateInput = {
         customer_id: customerId,
-        price_list_id: priceListId || null,
+        currency,
         recipient_email: recipientEmail || null,
         order_discount_percent: Number(orderDiscount) || 0,
         notes: notes || null,
@@ -300,7 +318,7 @@ export default function QuotationsPage() {
     mutationFn: async () => {
       if (!selectedQuotationId) throw new Error("Create or select a quotation first.")
       const body: QuotationLineCreateInput = {
-        product_id: newLineProductId,
+        variant_id: newLineVariantId,
         quantity: Number(newLineQuantity),
         line_discount_percent: Number(newLineDiscount) || 0,
       }
@@ -311,6 +329,7 @@ export default function QuotationsPage() {
       queryClient.setQueryData(["quotation", updated.id], updated)
       await invalidate()
       setNewLineProductId("")
+      setNewLineVariantId("")
       setNewLineQuantity("1")
       setNewLineDiscount("0")
       toast.success("Line added.")
@@ -351,7 +370,7 @@ export default function QuotationsPage() {
               setIsCreatingNew(true)
               setSelectedQuotationId(null)
               setCustomerId(customers[0]?.id ?? "")
-              setPriceListId(customers[0]?.default_price_list_id ?? priceLists[0]?.id ?? "")
+              setCurrency(currencies[0]?.code ?? "USD")
               setRecipientEmail(customers[0]?.contact_email ?? "")
               setOrderDiscount("0")
               setNotes("")
@@ -440,19 +459,23 @@ export default function QuotationsPage() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Price list</Label>
-                <Select value={priceListId} onValueChange={setPriceListId}>
+                <Label>Currency</Label>
+                <Select value={currency} onValueChange={setCurrency}>
                   <SelectTrigger className="w-full">
-                    <SelectValue placeholder="Choose price list" />
+                    <SelectValue placeholder="Choose currency" />
                   </SelectTrigger>
                   <SelectContent>
-                    {priceLists.map((priceList) => (
-                      <SelectItem key={priceList.id} value={priceList.id}>
-                        {priceList.name}
+                    {currencies.map((item) => (
+                      <SelectItem key={item.code} value={item.code}>
+                        {item.code} · {item.name}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">
+                  Prices come from the {selectedCustomer?.tier.name ?? "customer"} tier
+                  in this currency.
+                </p>
               </div>
               <div className="space-y-2">
                 <Label>Recipient email</Label>
@@ -572,16 +595,30 @@ export default function QuotationsPage() {
                       <SelectContent>
                         {products.map((product) => (
                           <SelectItem key={product.id} value={product.id}>
-                            {product.name} · {product.sku}
+                            {product.name} · {product.category}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
-                    {newLineProductId && (
+                    {selectedProduct && selectedProduct.variants.length > 1 && (
+                      <Select value={newLineVariantId} onValueChange={setNewLineVariantId}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Choose variant" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {selectedProduct.variants.map((variant) => (
+                            <SelectItem key={variant.id} value={variant.id}>
+                              {variant.name} · {variant.sku}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
+                    {newLineVariantId && (
                       <p className="text-xs text-muted-foreground">
-                        {selectedWarehouse
-                          ? `Warehouse: ${selectedWarehouse.warehouse_name} (${selectedWarehouse.warehouse_code}) · ${selectedWarehouse.quantity_available} available`
-                          : "No active warehouse stock available for this product."}
+                        {variantStock.length
+                          ? `${totalAvailable} available across ${variantStock.length} warehouse(s)`
+                          : "Not stock-tracked."}
                       </p>
                     )}
                   </div>
@@ -613,14 +650,15 @@ export default function QuotationsPage() {
                       <PlusIcon className="size-4" />
                       Add line
                     </Button>
-                    {newLineProductId && !selectedWarehouse && (
+                    {selectedProduct && selectedProduct.variants.length > 1 && !newLineVariantId && (
                       <p className="text-xs text-muted-foreground">
-                        This product has no active warehouse stock available.
+                        Choose a variant to price the line.
                       </p>
                     )}
-                    {selectedWarehouse && requestedQuantity > selectedWarehouse.quantity_available && (
-                      <p className="text-xs text-muted-foreground">
-                        Requested quantity exceeds the available stock in the selected warehouse.
+                    {newLineVariantId && variantStock.length > 0 && requestedQuantity > totalAvailable && (
+                      <p className="text-xs text-amber-600 dark:text-amber-500">
+                        Only {totalAvailable} in stock. The line will be split across
+                        warehouses and the remainder backordered.
                       </p>
                     )}
                   </div>

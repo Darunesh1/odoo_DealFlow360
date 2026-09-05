@@ -30,6 +30,9 @@ export type ProductUnit = (typeof PRODUCT_UNITS)[number]
 export const RECURRING_INTERVALS = ["weekly", "monthly", "quarterly", "yearly"] as const
 export type RecurringInterval = (typeof RECURRING_INTERVALS)[number]
 
+export const PRODUCT_STATUSES = ["active", "archived"] as const
+export type ProductStatus = (typeof PRODUCT_STATUSES)[number]
+
 export const LINE_SOURCES = ["manual", "upsell", "cross_sell"] as const
 export type LineSource = (typeof LINE_SOURCES)[number]
 
@@ -69,28 +72,41 @@ export type ApprovalStepStatus = (typeof APPROVAL_STEP_STATUSES)[number]
 export const APPROVAL_TRIGGERS = ["rep_submit", "rep_resubmit", "customer_counter"] as const
 export type ApprovalTrigger = (typeof APPROVAL_TRIGGERS)[number]
 
+/** The name is the natural key: there is no code, and no sort order. */
 export interface CustomerTier {
   id: string
-  code: string
   name: string
   max_discount_percent: number
-  sort_order: number
   is_active: boolean
   created_at: string
   updated_at: string
 }
 
-export interface PriceListRef {
-  id: string
+export interface Currency {
+  code: string
   name: string
-  currency: string
+  symbol: string
+  /** One unit of this currency in the base currency; the base row is 1. */
+  rate_to_base: number
+  is_base: boolean
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+/** A category with no row here has NO ceiling, which is not a ceiling of zero. */
+export interface CategoryLimit {
+  id: string
+  category: string
+  max_discount_percent: number
+  created_at: string
+  updated_at: string
 }
 
 export interface Customer {
   id: string
   name: string
   tier_id: string
-  default_price_list_id: string | null
   contact_email: string | null
   phone: string | null
   billing_address: string | null
@@ -98,62 +114,104 @@ export interface Customer {
   created_at: string
   updated_at: string
   tier: CustomerTier
-  default_price_list: PriceListRef | null
 }
 
-export interface ProductCategory {
+export interface VariantPrice {
+  tier_id: string
+  currency_code: string
+  unit_price: number
+  /** True on the cell the admin typed; the rest are FX-derived. */
+  is_entered: boolean
+}
+
+export interface VariantStock {
+  warehouse_id: string
+  quantity_on_hand: number
+  quantity_reserved: number
+  quantity_available: number
+}
+
+export interface VariantAttributeValue {
   id: string
-  code: string
+  value: string
+  position: number
+}
+
+export interface VariantAttribute {
+  id: string
   name: string
-  max_discount_percent: number | null
-  sort_order: number
+  position: number
+  values: VariantAttributeValue[]
+}
+
+/** One sellable combination. The only thing that carries a SKU. */
+export interface ProductVariant {
+  id: string
+  sku: string
+  name: string
+  options: Record<string, string>
+  unit_cost: number
+  is_default: boolean
   is_active: boolean
-  created_at: string
-  updated_at: string
+  prices: VariantPrice[]
+  stock: VariantStock[]
 }
 
 export interface Product {
   id: string
-  sku: string
   name: string
-  category_id: string
+  /** Free text; the form suggests names already in use. */
+  category: string
   description: string | null
-  list_price: number
-  unit_cost: number
   unit: ProductUnit
   tax_percent: number
   is_subscription: boolean
   recurring_interval: RecurringInterval | null
+  has_variants: boolean
   is_promoted: boolean
   promotion_label: string | null
-  is_active: boolean
+  status: ProductStatus
   created_at: string
   updated_at: string
-  category: ProductCategory
+  attributes: VariantAttribute[]
+  variants: ProductVariant[]
 }
 
-export interface PriceListItem {
-  id: string
-  price_list_id: string
-  product_id: string
-  unit_price: number
-  created_at: string
-  updated_at: string
-  product_name: string
-  sku: string
-}
-
-export interface PriceList {
+/** One row of the product catalog table (screen 16). */
+export interface ProductListRow {
   id: string
   name: string
-  tier_id: string | null
-  currency: string
-  adjustment_percent: number
-  is_active: boolean
-  created_at: string
-  updated_at: string
-  tier: CustomerTier | null
-  items: PriceListItem[]
+  category: string
+  unit: ProductUnit
+  tax_percent: number
+  status: ProductStatus
+  has_variants: boolean
+  is_subscription: boolean
+  recurring_interval: RecurringInterval | null
+  variant_count: number
+  price_min: number | null
+  price_max: number | null
+  base_currency: string
+}
+
+/** The three KPI boxes on the product catalog screen. */
+export interface CatalogStats {
+  products_active: number
+  products_archived: number
+  tier_count: number
+  currency_count: number
+  sku_count: number
+}
+
+export interface PriceMatrixRow {
+  product_id: string
+  product_name: string
+  variant_id: string
+  variant_name: string
+  sku: string
+  tier_name: string
+  currency_code: string
+  unit_price: number
 }
 
 export interface Warehouse {
@@ -173,7 +231,7 @@ export interface Warehouse {
 export interface StockItem {
   id: string
   warehouse_id: string
-  product_id: string
+  variant_id: string
   quantity_on_hand: number
   quantity_reserved: number
   quantity_available: number
@@ -185,7 +243,9 @@ export interface StockItem {
   updated_at: string
   warehouse_name: string
   warehouse_code: string
+  product_id: string
   product_name: string
+  variant_name: string
   sku: string
 }
 
@@ -194,10 +254,12 @@ export interface QuotationLine {
   quotation_id: string
   position: number
   product_id: string | null
-  category_id: string | null
+  variant_id: string | null
   warehouse_id: string | null
   product_name: string
-  category_name: string | null
+  variant_name: string | null
+  sku: string | null
+  category: string | null
   warehouse_name: string | null
   warehouse_code: string | null
   warehouse_bin_location: string | null
@@ -218,7 +280,7 @@ export interface QuotationLine {
   line_total: number
   is_recurring: boolean
   recurring_interval: RecurringInterval | null
-  selected_options: Record<string, unknown>[]
+  selected_options: Record<string, string>
   source: LineSource
   upsell_source_product_id: string | null
   created_at: string
@@ -267,7 +329,6 @@ export interface Quotation {
   owner_name: string | null
   sales_team_id: string | null
   status: QuotationStatus
-  price_list_id: string | null
   currency: string
   customer_tier_id: string | null
   tier_max_discount_percent: number | null
@@ -292,7 +353,6 @@ export interface Quotation {
   created_at: string
   updated_at: string
   customer: Customer
-  price_list: PriceListRef | null
   customer_tier: CustomerTier | null
   lines: QuotationLine[]
   approval: Approval | null
@@ -305,88 +365,90 @@ export interface QuotationSubmitResponse {
 }
 
 export interface CustomerTierCreateInput {
-  code: string
   name: string
-  max_discount_percent?: number | null
-  sort_order?: number
+  max_discount_percent: number
   is_active?: boolean
 }
 
 export interface CustomerTierUpdateInput {
-  code?: string
   name?: string
-  max_discount_percent?: number | null
-  sort_order?: number
+  max_discount_percent?: number
   is_active?: boolean
 }
 
-export interface ProductCategoryCreateInput {
+export interface CurrencyCreateInput {
   code: string
   name: string
-  max_discount_percent?: number | null
-  sort_order?: number
+  symbol?: string
+  rate_to_base: number
   is_active?: boolean
 }
 
-export interface ProductCategoryUpdateInput {
-  code?: string
+export interface CurrencyUpdateInput {
   name?: string
-  max_discount_percent?: number | null
-  sort_order?: number
+  symbol?: string
+  rate_to_base?: number
   is_active?: boolean
+  /** Re-derives every FX-derived price; typed cells are never touched. */
+  recompute_prices?: boolean
+}
+
+export interface CategoryLimitCreateInput {
+  category: string
+  max_discount_percent: number
+}
+
+export interface CategoryLimitUpdateInput {
+  category?: string
+  max_discount_percent?: number
+}
+
+export interface VariantAttributeInput {
+  name: string
+  values: string[]
 }
 
 export interface ProductCreateInput {
-  sku: string
   name: string
-  category_id: string
+  category: string
   description?: string | null
-  list_price: number
-  unit_cost?: number
   unit?: ProductUnit
   tax_percent?: number
   is_subscription?: boolean
   recurring_interval?: RecurringInterval | null
+  has_variants?: boolean
   is_promoted?: boolean
   promotion_label?: string | null
-  is_active?: boolean
+  attributes?: VariantAttributeInput[]
 }
 
 export interface ProductUpdateInput {
-  sku?: string
   name?: string
-  category_id?: string
+  category?: string
   description?: string | null
-  list_price?: number
-  unit_cost?: number
   unit?: ProductUnit
   tax_percent?: number
   is_subscription?: boolean
   recurring_interval?: RecurringInterval | null
+  has_variants?: boolean
   is_promoted?: boolean
   promotion_label?: string | null
-  is_active?: boolean
+  attributes?: VariantAttributeInput[]
 }
 
-export interface PriceListCreateInput {
-  name: string
-  tier_id?: string | null
-  currency?: string
-  adjustment_percent?: number
+/** One row of the generated-variants table, as the admin filled it in. */
+export interface VariantRowInput {
+  id: string
+  sku: string
+  unit_cost?: number
   is_active?: boolean
+  /** Only the cells the admin typed; the server fills the other currencies. */
+  prices: { tier_id: string; currency_code: string; unit_price: number }[]
+  stock: { warehouse_id: string; quantity_on_hand: number }[]
 }
 
-export interface PriceListUpdateInput {
-  name?: string
-  tier_id?: string | null
-  currency?: string
-  adjustment_percent?: number
-  is_active?: boolean
-}
-
-export interface PriceListItemUpsertInput {
-  product_id: string
-  unit_price: number
+export interface VariantMatrixSaveInput {
+  rows: VariantRowInput[]
 }
 
 export interface WarehouseCreateInput {
@@ -425,7 +487,6 @@ export interface StockUpsertInput {
 export interface CustomerCreateInput {
   name: string
   tier_id: string
-  default_price_list_id?: string | null
   contact_email?: string | null
   phone?: string | null
   billing_address?: string | null
@@ -435,7 +496,6 @@ export interface CustomerCreateInput {
 export interface CustomerUpdateInput {
   name?: string
   tier_id?: string
-  default_price_list_id?: string | null
   contact_email?: string | null
   phone?: string | null
   billing_address?: string | null
@@ -444,7 +504,7 @@ export interface CustomerUpdateInput {
 
 export interface QuotationCreateInput {
   customer_id: string
-  price_list_id?: string | null
+  currency?: string
   recipient_email?: string | null
   order_discount_percent?: number
   notes?: string | null
@@ -453,7 +513,6 @@ export interface QuotationCreateInput {
 }
 
 export interface QuotationUpdateInput {
-  price_list_id?: string | null
   recipient_email?: string | null
   order_discount_percent?: number
   notes?: string | null
@@ -463,17 +522,16 @@ export interface QuotationUpdateInput {
 }
 
 export interface QuotationLineCreateInput {
-  product_id: string
+  /** The variant carries the SKU, the stock and the tier price. */
+  variant_id: string
   quantity: number
   line_discount_percent?: number
-  selected_options?: Record<string, unknown>[]
   source?: LineSource
 }
 
 export interface QuotationLineUpdateInput {
   quantity?: number
   line_discount_percent?: number
-  selected_options?: Record<string, unknown>[]
   source?: LineSource
 }
 
