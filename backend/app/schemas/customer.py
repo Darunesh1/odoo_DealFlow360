@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 
 class CustomerTierBase(BaseModel):
@@ -47,6 +47,18 @@ class CustomerRead(CustomerBase):
     created_at: datetime
     updated_at: datetime
     tier: CustomerTierRead
+
+
+class CustomerQuickCreate(BaseModel):
+    """A rep adding a customer mid-quotation.
+
+    Name and email only. The tier is not a field: a new customer starts on the
+    lowest ceiling, and letting the person who benefits from a discount pick
+    the discount band would defeat the whole governance model.
+    """
+
+    name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
 
 
 class CustomerCreate(BaseModel):

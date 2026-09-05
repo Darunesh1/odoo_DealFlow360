@@ -23,6 +23,7 @@ async def serialize_variant(
         options=variant.options or {},
         unit_cost=float(variant.unit_cost),
         base_price=float(variant.base_price),
+        available_quantity=variant.available_quantity,
         is_default=variant.is_default,
         is_active=variant.is_active,
         prices=[

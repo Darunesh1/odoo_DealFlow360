@@ -119,6 +119,7 @@ class ProductVariantRead(BaseModel):
     options: Dict[str, str] = Field(default_factory=dict)
     unit_cost: float = 0
     base_price: float = 0
+    available_quantity: Optional[int] = None
     is_default: bool = False
     is_active: bool = True
     prices: List[VariantPriceRead] = Field(default_factory=list)
@@ -152,6 +153,9 @@ class VariantRowInput(BaseModel):
     base_price: float = Field(gt=0)
     is_active: bool = True
     stock: List[VariantStockInput] = Field(default_factory=list)
+    # Subscriptions only: how many licences of this plan exist to sell. A plan
+    # has no warehouse, so it carries a capacity instead of stock rows.
+    available_quantity: Optional[int] = Field(default=None, ge=0)
 
 
 class VariantMatrixSave(BaseModel):

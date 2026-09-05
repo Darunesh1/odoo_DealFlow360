@@ -231,7 +231,11 @@ async def save_variant_matrix(
         .scalars()
         .all()
     )
-    # Services and subscriptions carry no stock, so they are not asked for any.
+    # A subscription has no shelf, so it is capped rather than stocked - one
+    # number saying how many licences exist. Everything else is stock-tracked
+    # and needs a figure per active warehouse. Neither may be skipped: a SKU
+    # with no limit at all reaches the rep's picker as something sellable
+    # without end.
     stocked = not product.is_subscription
     required_warehouses = {w.id for w in warehouses} if stocked else set()
 
@@ -244,13 +248,19 @@ async def save_variant_matrix(
             raise ValueError(f"{label}: enter a unit cost before saving")
         if row.base_price is None or row.base_price <= 0:
             raise ValueError(f"{label}: enter a unit price before saving")
-        supplied = {entry.warehouse_id for entry in row.stock}
-        missing = required_warehouses - supplied
-        if missing:
-            names = ", ".join(
-                sorted(w.name for w in warehouses if w.id in missing)
+
+        if stocked:
+            supplied = {entry.warehouse_id for entry in row.stock}
+            missing = required_warehouses - supplied
+            if missing:
+                names = ", ".join(
+                    sorted(w.name for w in warehouses if w.id in missing)
+                )
+                raise ValueError(f"{label}: enter a quantity for {names}")
+        elif row.available_quantity is None or row.available_quantity <= 0:
+            raise ValueError(
+                f"{label}: enter how many licences of this plan can be sold"
             )
-            raise ValueError(f"{label}: enter a quantity for {names}")
 
     for row in rows:
         variant = variants[row.id]
@@ -258,6 +268,9 @@ async def save_variant_matrix(
         variant.unit_cost = row.unit_cost
         variant.base_price = row.base_price
         variant.is_active = row.is_active
+        # Only meaningful on a plan; left null on a physical variant, where the
+        # per-warehouse rows are the real answer.
+        variant.available_quantity = None if stocked else row.available_quantity
         db.add(variant)
         for entry in row.stock:
             await _upsert_stock(

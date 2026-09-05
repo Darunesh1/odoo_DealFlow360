@@ -140,6 +140,23 @@ async def get_customer_tier_by_id(
     return await _get_one(db, select(CustomerTier).where(CustomerTier.id == tier_id))
 
 
+async def get_lowest_active_tier(db: AsyncSession) -> Optional[CustomerTier]:
+    """The tier a brand-new customer starts on.
+
+    The lowest ceiling on offer - nobody talks their way into Gold pricing by
+    being typed into a form; a rep or admin promotes them later. Shared by
+    self-registration and by a rep creating a customer mid-quotation so the two
+    cannot drift apart.
+    """
+    result = await db.execute(
+        select(CustomerTier)
+        .where(CustomerTier.is_active.is_(True))
+        .order_by(CustomerTier.max_discount_percent.asc())
+        .limit(1)
+    )
+    return result.scalars().first()
+
+
 async def get_customer_tier_by_name(db: AsyncSession, name: str) -> Optional[CustomerTier]:
     return await _get_one(
         db, select(CustomerTier).where(func.lower(CustomerTier.name) == name.lower())
@@ -233,7 +250,17 @@ async def list_categories(db: AsyncSession) -> list[str]:
     limited = (
         (await db.execute(select(CategoryDiscountLimit.category))).scalars().all()
     )
-    return sorted({*used, *limited}, key=str.lower)
+    # "Subscription" is never suggested: it is set by the toggle, not typed.
+    # Leaving it in the list would invite exactly the disagreement the rule
+    # above exists to prevent.
+    return sorted(
+        {
+            name
+            for name in {*used, *limited}
+            if name.strip().casefold() != SUBSCRIPTION_CATEGORY.casefold()
+        },
+        key=str.lower,
+    )
 
 
 async def list_category_limits(db: AsyncSession) -> Sequence[CategoryDiscountLimit]:
@@ -325,8 +352,31 @@ async def list_active_products(db: AsyncSession) -> Sequence[Product]:
     return result.scalars().all()
 
 
+# A subscription's category is not a choice. The toggle is the single place
+# subscription-ness is declared, so the category follows from it rather than
+# being typed alongside it and allowed to disagree.
+SUBSCRIPTION_CATEGORY = "Subscription"
+
+
+def _apply_category_rule(data: dict, *, is_subscription: bool) -> None:
+    """Forces the category to match the subscription toggle.
+
+    Done in the service rather than the form so the API enforces it too - a
+    product created through the docs page cannot end up as a subscription
+    filed under Hardware.
+    """
+    if is_subscription:
+        data["category"] = SUBSCRIPTION_CATEGORY
+    elif data.get("category", "").strip().casefold() == SUBSCRIPTION_CATEGORY.casefold():
+        raise ValueError(
+            "Only a subscription product can use the Subscription category - "
+            "turn the subscription toggle on instead"
+        )
+
+
 async def create_product(db: AsyncSession, obj_in: ProductCreate) -> Product:
     data = obj_in.model_dump(exclude={"attributes"})
+    _apply_category_rule(data, is_subscription=bool(data.get("is_subscription")))
     product = Product(**data)
     db.add(product)
     await db.flush()
@@ -347,6 +397,15 @@ async def update_product(
 ) -> Product:
     data = obj_in.model_dump(exclude_unset=True)
     attributes = data.pop("attributes", None)
+    # A partial update may change either half of the pair, so the rule is
+    # evaluated against the result, not against what happened to be sent.
+    if "is_subscription" in data or "category" in data:
+        merged = {
+            "category": data.get("category", db_obj.category),
+            "is_subscription": data.get("is_subscription", db_obj.is_subscription),
+        }
+        _apply_category_rule(merged, is_subscription=bool(merged["is_subscription"]))
+        data["category"] = merged["category"]
     for field, value in data.items():
         setattr(db_obj, field, value)
     db.add(db_obj)
@@ -559,6 +618,20 @@ async def get_customer_by_id(
         .options(selectinload(Customer.tier))
         .where(Customer.id == customer_id),
     )
+
+
+async def find_customer_by_email(db: AsyncSession, email: str) -> Optional[Customer]:
+    """Matches on contact address, case-insensitively.
+
+    There is no unique index on it - a company can legitimately be entered
+    twice under different addresses - so this is a courtesy lookup that keeps
+    two reps quoting the same new company from creating two customers, not an
+    integrity guarantee.
+    """
+    result = await db.execute(
+        select(Customer).where(func.lower(Customer.contact_email) == email.strip().lower())
+    )
+    return result.scalars().first()
 
 
 async def list_customers(db: AsyncSession) -> Sequence[Customer]:

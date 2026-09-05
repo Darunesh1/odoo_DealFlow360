@@ -84,18 +84,12 @@ async def register_customer(
     Roles come from here, never from the request. The schema has no `roles`
     field to carry one.
     """
-    from app.models.customer import Customer, CustomerTier
+    from app.models.customer import Customer
+    from app.services.catalog_service import get_lowest_active_tier
 
     address = normalize_email(email)
 
-    tier = (
-        await db.execute(
-            select(CustomerTier)
-            .where(CustomerTier.is_active.is_(True))
-            .order_by(CustomerTier.max_discount_percent.asc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    tier = await get_lowest_active_tier(db)
     if tier is None:
         raise ValueError("No customer tier is configured; an admin must add one first")
 

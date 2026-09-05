@@ -182,6 +182,8 @@ export interface ProductVariant {
   /** The two numbers an admin types, both in the base currency. */
   unit_cost: number
   base_price: number
+  /** Licences available to sell. Subscriptions only; null on stocked goods. */
+  available_quantity: number | null
   is_default: boolean
   is_active: boolean
   prices: VariantPrice[]
@@ -1057,6 +1059,8 @@ export interface VariantRowInput {
   unit_cost: number
   base_price: number
   is_active?: boolean
+  /** Subscriptions only: how many licences of the plan exist to sell. */
+  available_quantity?: number | null
   /** Required for every active warehouse unless the product is a subscription. */
   stock: { warehouse_id: string; quantity_on_hand: number }[]
 }

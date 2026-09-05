@@ -428,6 +428,54 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
     return await ensure_quotation_loaded(db, quotation.id)
 
 
+async def _check_plan_capacity(
+    db: AsyncSession,
+    *,
+    product: Product,
+    variant: ProductVariant,
+    quantity: int,
+) -> None:
+    """Refuses a subscription line that would oversell the plan.
+
+    A plan is capped rather than stocked, so the limit is checked against the
+    subscriptions already open on it - not against a warehouse. Paused ones
+    still count: the seat is allocated, it is simply not billing.
+
+    Measured against CONFIRMED subscriptions only. Two drafts could each pass
+    and then both confirm; holding capacity from draft would need reservation
+    semantics the plan does not ask for, and the confirm path is where a real
+    system would take the seat.
+
+    Physical products fall through untouched: their limit is stock, and line
+    entry deliberately never refuses a short physical line, because that is
+    exactly what the warehouse split and backorders exist for.
+    """
+    if not product.is_subscription or variant.available_quantity is None:
+        return
+
+    from app.models.billing import Subscription, SubscriptionStatus
+
+    sold = int(
+        (
+            await db.execute(
+                select(func.coalesce(func.sum(Subscription.quantity), 0)).where(
+                    Subscription.variant_id == variant.id,
+                    Subscription.status.in_(
+                        [SubscriptionStatus.ACTIVE, SubscriptionStatus.PAUSED]
+                    ),
+                )
+            )
+        ).scalar_one()
+    )
+
+    remaining = max(int(variant.available_quantity) - sold, 0)
+    if quantity > remaining:
+        raise ValueError(
+            f"{product.name}: only {remaining} of {variant.available_quantity} "
+            f"licences are left to sell"
+        )
+
+
 async def add_line(db: AsyncSession, quotation: Quotation, obj_in: QuotationLineCreate) -> Quotation:
     if quotation.status != QuotationStatus.DRAFT:
         raise ValueError("Only draft quotations can be edited")
@@ -442,6 +490,10 @@ async def add_line(db: AsyncSession, quotation: Quotation, obj_in: QuotationLine
     # stale tab must not be able to quote one.
     if product.status != ProductStatus.ACTIVE:
         raise ValueError(f"{product.name} is archived and cannot be quoted")
+
+    await _check_plan_capacity(
+        db, product=product, variant=variant, quantity=obj_in.quantity
+    )
 
     warehouse_id, warehouse_name, warehouse_code, warehouse_bin_location, stock_available_at_entry = await _allocate_stock_line(
         db,
@@ -522,6 +574,15 @@ async def update_line(db: AsyncSession, quotation: Quotation, line_id: uuid.UUID
     if line.variant_id is None:
         raise ValueError("Quotation line variant is missing")
     quantity = obj_in.quantity if obj_in.quantity is not None else line.quantity
+
+    if quantity != line.quantity and line.is_recurring and line.product_id:
+        product = await get_product_by_id(db, line.product_id)
+        variant = await get_variant_by_id(db, line.variant_id)
+        if product is not None and variant is not None:
+            await _check_plan_capacity(
+                db, product=product, variant=variant, quantity=quantity
+            )
+
     if quantity != line.quantity or line.warehouse_id is None:
         warehouse_id, warehouse_name, warehouse_code, warehouse_bin_location, stock_available_at_entry = await _allocate_stock_line(
             db,

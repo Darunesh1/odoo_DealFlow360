@@ -32,7 +32,13 @@ from app.schemas.quotation import (
     UpsellSuggestion,
 )
 from app.services import negotiation_service, upsell_service
-from app.services.catalog_service import get_customer_by_id
+from app.schemas.customer import CustomerCreate, CustomerQuickCreate, CustomerRead
+from app.services.catalog_service import (
+    create_customer,
+    find_customer_by_email,
+    get_customer_by_id,
+    get_lowest_active_tier,
+)
 from app.services.quotation_service import (
     add_line,
     create_draft_quotation,
@@ -473,3 +479,52 @@ async def send_to_customer(
     quotation = await ensure_quotation_loaded(db, quotation_id)
     await notify_quotation_sent(db, quotation=quotation, recipient=recipient)
     return QuotationRead.model_validate(quotation)
+
+
+@router.post(
+    "/customers", response_model=CustomerRead, status_code=status.HTTP_201_CREATED
+)
+async def create_customer_for_quoting(
+    body: CustomerQuickCreate,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Adds a customer mid-quotation, and lets them into the portal.
+
+    A rep should not have to stop and find an admin to quote someone new. The
+    tier is not theirs to choose - a new customer starts on the lowest ceiling
+    - but the name and the address are all the system actually needs.
+
+    The portal half is `sync_customer_portal_email`, unchanged: it creates the
+    login with an unusable-password sentinel, links it to this customer, grants
+    the customer role and emails an accept-invite link. Setting a password from
+    that link is the sign-up, and the quotations follow because the portal
+    scopes everything by `user.customer_id`.
+    """
+    tier = await get_lowest_active_tier(db)
+    if tier is None:
+        raise _bad_request(
+            ValueError("No customer tier is configured; an admin must add one first")
+        )
+
+    existing = await find_customer_by_email(db, body.email)
+    if existing is not None:
+        # Idempotent rather than a duplicate: two reps quoting the same new
+        # company on the same morning should land on one customer, not two.
+        return CustomerRead.model_validate(existing)
+
+    customer = await create_customer(
+        db,
+        CustomerCreate(
+            name=body.name.strip(),
+            tier_id=tier.id,
+            contact_email=body.email,
+        ),
+    )
+
+    await sync_customer_portal_email(
+        db,
+        customer=customer,
+        recipient_email=body.email,
+        quotation_number="",
+    )
+    return CustomerRead.model_validate(customer)

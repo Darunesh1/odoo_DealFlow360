@@ -244,6 +244,11 @@ class ProductVariant(Base, TimestampMixin):
     # what makes margin computable.
     unit_cost: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
     base_price: Mapped[float] = mapped_column(UNIT_PRICE, default=0, nullable=False)
+    # How many of this plan may be sold in total. Subscriptions only: a plan
+    # has no warehouse to sit in, so its limit is a capacity rather than stock,
+    # and stock_items would be fiction. NULL on a physical variant, where the
+    # per-warehouse rows are the real answer.
+    available_quantity: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
@@ -256,6 +261,10 @@ class ProductVariant(Base, TimestampMixin):
         UniqueConstraint("product_id", "name", name="uq_product_variant_name"),
         CheckConstraint(
             "unit_cost >= 0 AND base_price >= 0", name="ck_variant_amounts_non_negative"
+        ),
+        CheckConstraint(
+            "available_quantity IS NULL OR available_quantity >= 0",
+            name="ck_variant_capacity_non_negative",
         ),
     )
 

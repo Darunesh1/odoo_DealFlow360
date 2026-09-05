@@ -46,12 +46,17 @@ import {
 
 /** One editable row of the matrix. Only these three fields are ever typed —
  * every tier and currency price is derived from base price. */
+/** Forced by the subscription toggle; the server enforces the same rule. */
+const SUBSCRIPTION_CATEGORY = "Subscription"
+
 interface MatrixRow {
   sku: string
   unitCost: string
   basePrice: string
-  /** warehouse id -> quantity, as typed */
+  /** warehouse id -> quantity, as typed. Stocked products only. */
   quantity: Record<string, string>
+  /** Licences available to sell. Subscriptions only, as typed. */
+  capacity: string
 }
 
 interface AttributeDraft {
@@ -145,6 +150,11 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
         unitCost: variant.unit_cost ? String(variant.unit_cost) : "",
         basePrice: variant.base_price ? String(variant.base_price) : "",
         quantity,
+        capacity:
+          variant.available_quantity !== null &&
+          variant.available_quantity !== undefined
+            ? String(variant.available_quantity)
+            : "",
       }
     }
     setMatrix(next)
@@ -166,7 +176,15 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
     Boolean(row) &&
     Number(row!.unitCost) > 0 &&
     Number(row!.basePrice) > 0 &&
-    (!stocked || warehouses.every((w) => row!.quantity[w.id]?.trim() !== undefined && row!.quantity[w.id]?.trim() !== ""))
+    // A plan is capped, everything else is stocked. Both are required; a SKU
+    // with neither would reach the rep's picker as sellable without end.
+    (stocked
+      ? warehouses.every(
+          (w) =>
+            row!.quantity[w.id]?.trim() !== undefined &&
+            row!.quantity[w.id]?.trim() !== ""
+        )
+      : Number(row!.capacity) > 0)
 
   const matrixComplete =
     variants.length > 0 && variants.every((variant) => rowComplete(matrix[variant.id]))
@@ -236,6 +254,7 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
           sku: row?.sku ?? variant.sku,
           unit_cost: Number(row?.unitCost ?? 0),
           base_price: Number(row?.basePrice ?? 0),
+          available_quantity: stocked ? null : Number(row?.capacity ?? 0) || 0,
           stock: stocked
             ? warehouses.map((warehouse) => ({
                 warehouse_id: warehouse.id,
@@ -311,8 +330,20 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
               value={category}
               onChange={(event) => setCategory(event.target.value)}
               placeholder="Hardware"
+              // The toggle is the only place subscription-ness is declared, so
+              // the category follows it rather than being typed alongside it
+              // and allowed to disagree.
+              readOnly={isSubscription}
+              disabled={isSubscription}
             />
-            {/* Suggests names already in use, but accepts anything typed. */}
+            {isSubscription ? (
+              <p className="text-xs text-muted-foreground">
+                Set by the subscription toggle.
+              </p>
+            ) : null}
+            {/* Suggests names already in use, but accepts anything typed.
+                "Subscription" is never among them - the server refuses it on a
+                product whose toggle is off. */}
             <datalist id="known-categories">
               {categories.map((item) => (
                 <option key={item} value={item} />
@@ -357,7 +388,13 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
             <Switch
               id="is-subscription"
               checked={isSubscription}
-              onCheckedChange={setIsSubscription}
+              onCheckedChange={(next) => {
+                setIsSubscription(next)
+                // Mirrors the server rule immediately, so the form never shows
+                // a state the API would reject.
+                if (next) setCategory(SUBSCRIPTION_CATEGORY)
+                else if (category === SUBSCRIPTION_CATEGORY) setCategory("")
+              }}
             />
             <Label htmlFor="is-subscription">Subscription</Label>
           </div>
@@ -568,12 +605,20 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                   <TableHead className="min-w-[9rem]">
                     Unit price ({baseCurrency?.code})
                   </TableHead>
-                  {stocked &&
+                  {/* A plan is capped, not stocked: one licence figure in
+                      place of a column per warehouse, because a subscription
+                      does not sit in a depot. */}
+                  {stocked ? (
                     warehouses.map((warehouse) => (
                       <TableHead key={warehouse.id} className="min-w-[7rem]">
                         {warehouse.name}
                       </TableHead>
-                    ))}
+                    ))
+                  ) : (
+                    <TableHead className="min-w-[10rem]">
+                      Available licences
+                    </TableHead>
+                  )}
                   {tiers.flatMap((tier) =>
                     currencies.map((currency) => (
                       <TableHead
@@ -631,7 +676,7 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                           }
                         />
                       </TableCell>
-                      {stocked &&
+                      {stocked ? (
                         warehouses.map((warehouse) => (
                           <TableCell key={warehouse.id}>
                             <Input
@@ -653,7 +698,22 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                               }
                             />
                           </TableCell>
-                        ))}
+                        ))
+                      ) : (
+                        <TableCell>
+                          <Input
+                            type="number"
+                            min="1"
+                            className="h-8"
+                            placeholder="required"
+                            aria-invalid={!row?.capacity || Number(row.capacity) <= 0}
+                            value={row?.capacity ?? ""}
+                            onChange={(event) =>
+                              patchRow(variant.id, { capacity: event.target.value })
+                            }
+                          />
+                        </TableCell>
+                      )}
                       {tiers.flatMap((tier) =>
                         currencies.map((currency) => {
                           const value = cellPrice(row?.basePrice ?? "", tier, currency)
@@ -681,8 +741,11 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
               </Button>
               {!matrixComplete && (
                 <span className="text-xs text-muted-foreground">
-                  Every SKU needs a unit cost, a unit price
-                  {stocked ? " and a quantity for each warehouse" : ""}.
+                  Every SKU needs a unit cost, a unit price and
+                  {stocked
+                    ? " a quantity for each warehouse"
+                    : " the number of licences available"}
+                  .
                 </span>
               )}
             </div>

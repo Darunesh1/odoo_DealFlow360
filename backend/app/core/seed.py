@@ -200,7 +200,9 @@ async def seed_demo_data() -> None:
             )
             unit_cost, base_price = pricing[name]
             # Anything that is not a subscription is stock-tracked, so it needs
-            # a quantity per warehouse - the same rule the matrix enforces.
+            # a quantity per warehouse. A plan is capped instead: one number
+            # saying how many licences exist - the same rule the matrix
+            # enforces.
             stocked = interval is None
             rows = []
             for index, variant in enumerate(product.variants):
@@ -215,6 +217,9 @@ async def seed_demo_data() -> None:
                         # Higher-specced combinations cost and sell for more.
                         unit_cost=round(unit_cost * (1 + index * 0.05), 2),
                         base_price=round(base_price * (1 + index * 0.05), 2),
+                        # Deliberately finite, so the demo can show a plan
+                        # running out rather than selling for ever.
+                        available_quantity=None if stocked else 25,
                         stock=(
                             [
                                 {

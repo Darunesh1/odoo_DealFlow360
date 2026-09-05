@@ -38,6 +38,8 @@ from app.services.catalog_service import (
     create_customer_tier,
     create_product,
     create_warehouse,
+    find_customer_by_email,
+    get_lowest_active_tier,
     delete_category_limit,
     delete_currency,
     delete_customer_tier,

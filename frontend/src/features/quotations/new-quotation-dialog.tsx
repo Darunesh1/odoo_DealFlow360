@@ -5,6 +5,7 @@ import { z } from "zod"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { CustomerPicker } from "@/features/quotations/customer-picker"
 import {
   Dialog,
   DialogContent,
@@ -105,21 +106,13 @@ export function NewQuotationDialog({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Customer</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Choose a customer" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {(customers.data ?? []).map((customer) => (
-                        <SelectItem key={customer.id} value={customer.id}>
-                          {customer.name}
-                          {customer.tier ? ` · ${customer.tier.name}` : ""}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FormControl>
+                    <CustomerPicker
+                      customers={customers.data ?? []}
+                      value={field.value}
+                      onChange={field.onChange}
+                    />
+                  </FormControl>
                   <FormMessage />
                 </FormItem>
               )}
