@@ -2,6 +2,7 @@ from typing import Any
 from fastapi import APIRouter, Response, status
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.core.database import engine
 from app.core.redis import ping as redis_ping
 
@@ -32,4 +33,11 @@ async def readiness(response: Response) -> Any:
     if not ready:
         response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
 
-    return {"status": "ready" if ready else "degraded", "checks": checks}
+    return {
+        "status": "ready" if ready else "degraded",
+        "checks": checks,
+        # Reported, not checked: with SMTP unset the app is perfectly healthy,
+        # it just logs mail instead of sending it. Failing readiness over that
+        # would refuse traffic to a working development stack.
+        "email": "smtp" if settings.smtp_configured else "logged to the worker",
+    }

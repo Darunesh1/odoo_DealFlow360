@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     SMTP_PORT: Optional[int] = None
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
+    # STARTTLS on a submission port (587) is the common case and the default.
+    # Set SMTP_SSL for an implicit-TLS port (465); the two are mutually
+    # exclusive, and SSL wins if both are somehow true.
+    SMTP_TLS: bool = True
+    SMTP_SSL: bool = False
+    # For Gmail this MUST be the same address as SMTP_USER - the server
+    # rewrites or rejects a From it does not own, which looks like "the email
+    # silently never arrived".
     EMAILS_FROM_EMAIL: Optional[str] = "no-reply@yourdomain.com"
     EMAILS_FROM_NAME: Optional[str] = "DealFlow360"
 
@@ -91,6 +99,18 @@ class Settings(BaseSettings):
     def redis_url(self) -> str:
         """Constructs the Redis connection URL."""
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
+
+    @property
+    def smtp_configured(self) -> bool:
+        """True once all four SMTP values are present.
+
+        Nothing else switches email delivery on: with any of them missing,
+        send_email logs the message instead of dispatching it, which is how a
+        verification link reaches you in development.
+        """
+        return all(
+            [self.SMTP_HOST, self.SMTP_PORT, self.SMTP_USER, self.SMTP_PASSWORD]
+        )
 
 
 settings = Settings()

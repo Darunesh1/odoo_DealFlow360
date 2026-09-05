@@ -46,16 +46,7 @@ def render_email(
 
 def send_email(recipient: str, subject: str, html_content: str) -> str:
     """Helper method to send an HTML email using SMTP or log it if SMTP configuration is missing."""
-    smtp_configured = all(
-        [
-            settings.SMTP_HOST,
-            settings.SMTP_PORT,
-            settings.SMTP_USER,
-            settings.SMTP_PASSWORD,
-        ]
-    )
-
-    if not smtp_configured:
+    if not settings.smtp_configured:
         logger.info("=== [MOCK EMAIL DISPATCHED] ===")
         logger.info(f"Recipient: {recipient}")
         logger.info(f"Subject:   {subject}")
@@ -71,10 +62,15 @@ def send_email(recipient: str, subject: str, html_content: str) -> str:
     msg["To"] = recipient
     msg.attach(MIMEText(html_content, "html"))
 
+    # Implicit TLS (port 465) opens the socket already encrypted, so it uses a
+    # different class and must not then call starttls(). Submission ports (587)
+    # take the plaintext connection and upgrade it.
+    connect = smtplib.SMTP_SSL if settings.SMTP_SSL else smtplib.SMTP
+
     try:
-        # Connect, secure via TLS, login and send
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:  # type: ignore
-            server.starttls()
+        with connect(settings.SMTP_HOST, settings.SMTP_PORT) as server:  # type: ignore
+            if settings.SMTP_TLS and not settings.SMTP_SSL:
+                server.starttls()
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)  # type: ignore
             server.sendmail(
                 settings.EMAILS_FROM_EMAIL, recipient, msg.as_string()  # type: ignore
