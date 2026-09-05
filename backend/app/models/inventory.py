@@ -43,7 +43,12 @@ class Warehouse(Base, TimestampMixin):
 
 
 class StockItem(Base, TimestampMixin):
-    """Stock for one product at one warehouse - the Stock screen's row."""
+    """Stock for one variant at one warehouse - the Stock screen's row.
+
+    Keyed on the variant, not the product: the admin enters a quantity per
+    warehouse for every generated SKU, and the split planner allocates the SKU
+    the rep actually put on the line.
+    """
 
     __tablename__ = "stock_items"
 
@@ -53,8 +58,8 @@ class StockItem(Base, TimestampMixin):
     warehouse_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="CASCADE"), nullable=False
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"),
+    variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="CASCADE"),
         index=True, nullable=False,
     )
     quantity_on_hand: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -72,10 +77,10 @@ class StockItem(Base, TimestampMixin):
     bin_location: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     warehouse: Mapped["Warehouse"] = relationship(back_populates="stock")
-    product: Mapped["Product"] = relationship(lazy="selectin")
+    variant: Mapped["ProductVariant"] = relationship(lazy="selectin")
 
     __table_args__ = (
-        UniqueConstraint("warehouse_id", "product_id", name="uq_stock_item"),
+        UniqueConstraint("warehouse_id", "variant_id", name="uq_stock_item"),
         CheckConstraint("quantity_on_hand >= 0", name="ck_stock_on_hand_non_negative"),
         CheckConstraint("quantity_reserved >= 0", name="ck_stock_reserved_non_negative"),
         # The last line of defence against two people accepting a split at once:
@@ -83,5 +88,5 @@ class StockItem(Base, TimestampMixin):
         CheckConstraint(
             "quantity_reserved <= quantity_on_hand", name="ck_stock_reserved_within_on_hand"
         ),
-        Index("ix_stock_items_available", "product_id", "quantity_available"),
+        Index("ix_stock_items_available", "variant_id", "quantity_available"),
     )

@@ -16,7 +16,7 @@ from app.models.base import MONEY, PERCENT, POINTS, UNIT_PRICE, TimestampMixin
 from app.models.catalog import RecurringInterval
 
 if TYPE_CHECKING:
-    from app.models.catalog import PriceList, Product, ProductCategory
+    from app.models.catalog import Product, ProductVariant
     from app.models.customer import Customer, CustomerTier
     from app.models.inventory import Warehouse
 
@@ -92,10 +92,10 @@ class Quotation(Base, TimestampMixin):
         default=QuotationStatus.DRAFT, index=True, nullable=False,
     )
 
-    price_list_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("price_lists.id", ondelete="RESTRICT"), nullable=True
+    currency: Mapped[str] = mapped_column(
+        String(3), ForeignKey("currencies.code", ondelete="RESTRICT"),
+        default="USD", nullable=False,
     )
-    currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
     customer_tier_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customer_tiers.id", ondelete="RESTRICT"), nullable=True
     )
@@ -137,7 +137,6 @@ class Quotation(Base, TimestampMixin):
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     customer: Mapped["Customer"] = relationship(lazy="selectin")
-    price_list: Mapped[Optional["PriceList"]] = relationship(lazy="selectin")
     customer_tier: Mapped[Optional["CustomerTier"]] = relationship(lazy="selectin")
     lines: Mapped[list["QuotationLine"]] = relationship(
         back_populates="quotation", cascade="all, delete-orphan", lazy="selectin",
@@ -177,14 +176,18 @@ class QuotationLine(Base, TimestampMixin):
     product_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=True
     )
-    category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("product_categories.id", ondelete="RESTRICT"), nullable=True
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="RESTRICT"), nullable=True
     )
     warehouse_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=True
     )
     product_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    variant_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    sku: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Free-text snapshot: the category the product carried when the line was
+    # entered, so a later rename cannot rewrite a confirmed quote.
+    category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     warehouse_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     warehouse_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     warehouse_bin_location: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -246,7 +249,7 @@ class QuotationLine(Base, TimestampMixin):
     product: Mapped[Optional["Product"]] = relationship(
         foreign_keys=[product_id], lazy="selectin"
     )
-    category: Mapped[Optional["ProductCategory"]] = relationship(lazy="selectin")
+    variant: Mapped[Optional["ProductVariant"]] = relationship(lazy="selectin")
     warehouse: Mapped[Optional["Warehouse"]] = relationship(
         foreign_keys=[warehouse_id], lazy="selectin"
     )

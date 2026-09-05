@@ -1,17 +1,13 @@
 """Customers, their tiers, and sales teams."""
 
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 import uuid
-from sqlalchemy import Boolean, CheckConstraint, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.models.base import PERCENT, TimestampMixin
-
-if TYPE_CHECKING:
-    from app.models.catalog import PriceList
-
 
 class SalesTeam(Base, TimestampMixin):
     """A group of reps. Reporting filters by team, and the login screen offers
@@ -39,10 +35,10 @@ class CustomerTier(Base, TimestampMixin):
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
     )
-    code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The name is the natural key: there is no code, and listings order by the
+    # ceiling rather than by a hand-maintained sort column.
+    name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     max_discount_percent: Mapped[float] = mapped_column(PERCENT, nullable=False)
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     __table_args__ = (
@@ -69,13 +65,9 @@ class Customer(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("customer_tiers.id", ondelete="RESTRICT"),
         index=True, nullable=False,
     )
-    default_price_list_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("price_lists.id", ondelete="SET NULL"), nullable=True
-    )
     contact_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     billing_address: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     tier: Mapped["CustomerTier"] = relationship(lazy="selectin")
-    default_price_list: Mapped[Optional["PriceList"]] = relationship(lazy="selectin")

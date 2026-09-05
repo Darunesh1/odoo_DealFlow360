@@ -86,10 +86,11 @@ class SalesRecord(Base, TimestampMixin):
     sales_rep_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     # Reporting dimensions, snapshotted so historical numbers never move.
-    category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("product_categories.id", ondelete="SET NULL"), nullable=True
+    variant_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="SET NULL"), nullable=True
     )
-    category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    sku: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    category: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     customer_tier_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("customer_tiers.id", ondelete="SET NULL"), nullable=True
     )
@@ -127,7 +128,7 @@ class SalesRecord(Base, TimestampMixin):
         # One index per reporting dimension the mockup filters on.
         Index("ix_sales_record_product", "product_id", "sold_at"),
         Index("ix_sales_record_rep", "sales_rep_id", "sold_at"),
-        Index("ix_sales_record_category", "category_id", "sold_at"),
+        Index("ix_sales_record_category", "category", "sold_at"),
         Index("ix_sales_record_customer", "customer_id", "sold_at"),
         Index("ix_sales_record_team", "sales_team_id", "sold_at"),
     )

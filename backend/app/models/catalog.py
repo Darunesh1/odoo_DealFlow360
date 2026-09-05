@@ -1,17 +1,17 @@
-"""Products, variants, price lists and upsell pairings."""
+"""Products, their generated variants, tier pricing and upsell pairings."""
 
 import enum
 from typing import TYPE_CHECKING, Optional
 import uuid
 from sqlalchemy import (
     Boolean, CheckConstraint, Enum as SAEnum, ForeignKey, Index, Integer,
-    String, Text, UniqueConstraint, text,
+    Numeric, String, Text, UniqueConstraint, text,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
-from app.models.base import MONEY, PERCENT, RATIO, TimestampMixin
+from app.models.base import MONEY, PERCENT, RATIO, UNIT_PRICE, TimestampMixin
 
 if TYPE_CHECKING:
     from app.models.customer import CustomerTier
@@ -36,6 +36,14 @@ class ProductUnit(str, enum.Enum):
     RECURRING = "recurring"
 
 
+class ProductStatus(str, enum.Enum):
+    """Active is currently sellable. Archived is kept for history but cannot be
+    put on a new quotation."""
+
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
 class PairingSource(str, enum.Enum):
     """Where an upsell suggestion came from."""
 
@@ -43,54 +51,75 @@ class PairingSource(str, enum.Enum):
     MANUAL = "manual"
 
 
-class ProductCategory(Base, TimestampMixin):
-    """Hardware / Services / Subscriptions, each with its own discount ceiling."""
+class Currency(Base, TimestampMixin):
+    """A currency the catalog can be priced in.
 
-    __tablename__ = "product_categories"
+    rate_to_base converts one unit of this currency into the base currency, so
+    the base row is 1.0. Exactly one row may be the base.
+    """
+
+    __tablename__ = "currencies"
+
+    code: Mapped[str] = mapped_column(String(3), primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(8), default="", nullable=False)
+    rate_to_base: Mapped[float] = mapped_column(Numeric(16, 6), default=1, nullable=False)
+    is_base: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("rate_to_base > 0", name="ck_currency_rate_positive"),
+        CheckConstraint(
+            "NOT is_base OR rate_to_base = 1", name="ck_currency_base_rate_is_one"
+        ),
+        # One base currency, enforced in the database rather than by convention.
+        Index(
+            "uq_currency_single_base", "is_base",
+            unique=True, postgresql_where=text("is_base"),
+        ),
+    )
+
+
+class CategoryDiscountLimit(Base, TimestampMixin):
+    """Screen 18's category ceiling panel, keyed by the free-text category name.
+
+    A category absent from this table has NO ceiling, which is not the same as a
+    ceiling of zero: defaulting to zero would flag every uncapped line the
+    instant anyone discounted it.
+    """
+
+    __tablename__ = "category_discount_limits"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
     )
-    code: Mapped[str] = mapped_column(String(50), unique=True, index=True, nullable=False)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # NULL means "no category ceiling", which is NOT the same as zero. The
-    # mockup gives Hardware 15 and Services 10 and says nothing about
-    # Subscriptions; defaulting that to 0.00 would flag every subscription line
-    # the instant anyone discounted it.
-    max_discount_percent: Mapped[Optional[float]] = mapped_column(PERCENT, nullable=True)
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    category: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)
+    max_discount_percent: Mapped[float] = mapped_column(PERCENT, nullable=False)
 
     __table_args__ = (
         CheckConstraint(
-            "max_discount_percent IS NULL OR "
-            "(max_discount_percent >= 0 AND max_discount_percent <= 100)",
-            name="ck_product_category_percent_range",
+            "max_discount_percent >= 0 AND max_discount_percent <= 100",
+            name="ck_category_limit_percent_range",
         ),
     )
 
 
 class Product(Base, TimestampMixin):
-    """A sellable item. Carries no stock column: stock is per warehouse, and a
-    product-level total would drift from the warehouse rows within one demo."""
+    """A sellable item.
+
+    Carries neither a price nor a stock column: price is per (variant, tier,
+    currency) and stock is per (variant, warehouse). Category is free text -
+    the admin types it and the form suggests names already in use.
+    """
 
     __tablename__ = "products"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
     )
-    sku: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     name: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
-    category_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("product_categories.id", ondelete="RESTRICT"),
-        index=True, nullable=False,
-    )
+    category: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    list_price: Mapped[float] = mapped_column(MONEY, nullable=False)
-    # Not in the original field list. Margin is revenue minus cost, and the UI
-    # shows a live margin indicator plus "Margin +$18" on upsell chips, so
-    # without a cost those features are not inaccurate - they are uncomputable.
-    unit_cost: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
     unit: Mapped[ProductUnit] = mapped_column(
         SAEnum(ProductUnit, name="product_unit",
                values_callable=lambda e: [m.value for m in e]),
@@ -103,14 +132,23 @@ class Product(Base, TimestampMixin):
                values_callable=lambda e: [m.value for m in e]),
         nullable=True,
     )
+    has_variants: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # Drives the "Promo: 12% off" tag on upsell suggestions.
     is_promoted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     promotion_label: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[ProductStatus] = mapped_column(
+        SAEnum(ProductStatus, name="product_status",
+               values_callable=lambda e: [m.value for m in e]),
+        default=ProductStatus.ACTIVE, nullable=False,
+    )
 
-    category: Mapped["ProductCategory"] = relationship(lazy="selectin")
-    variant_options: Mapped[list["ProductVariantOption"]] = relationship(
-        back_populates="product", cascade="all, delete-orphan", lazy="selectin"
+    attributes: Mapped[list["ProductVariantAttribute"]] = relationship(
+        back_populates="product", cascade="all, delete-orphan", lazy="selectin",
+        order_by="ProductVariantAttribute.position",
+    )
+    variants: Mapped[list["ProductVariant"]] = relationship(
+        back_populates="product", cascade="all, delete-orphan", lazy="selectin",
+        order_by="ProductVariant.name",
     )
 
     __table_args__ = (
@@ -120,24 +158,17 @@ class Product(Base, TimestampMixin):
             "(recurring_interval IS NOT NULL) = is_subscription",
             name="ck_product_recurring_matches_subscription",
         ),
-        CheckConstraint("list_price >= 0 AND unit_cost >= 0", name="ck_product_amounts_non_negative"),
         CheckConstraint(
             "tax_percent >= 0 AND tax_percent <= 100", name="ck_product_tax_range"
         ),
-        Index("ix_products_category_active", "category_id", "is_active"),
+        Index("ix_products_category_status", "category", "status"),
     )
 
 
-class ProductVariantOption(Base, TimestampMixin):
-    """One (attribute, value) pair with its price delta.
+class ProductVariantAttribute(Base, TimestampMixin):
+    """One axis of the variant matrix: "Color", "RAM"."""
 
-    Grouping by attribute renders the mockup's row exactly:
-    "Color | Blue, Black | +$10/+$30". The "340 SKUs" stat on the catalog
-    screen is a count of these option rows - it is not a combination matrix,
-    which this table deliberately cannot describe.
-    """
-
-    __tablename__ = "product_variant_options"
+    __tablename__ = "product_variant_attributes"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
@@ -146,82 +177,119 @@ class ProductVariantOption(Base, TimestampMixin):
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"),
         index=True, nullable=False,
     )
-    attribute: Mapped[str] = mapped_column(String(100), nullable=False)
-    value: Mapped[str] = mapped_column(String(100), nullable=False)
-    price_delta: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
-    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    product: Mapped["Product"] = relationship(back_populates="variant_options")
+    product: Mapped["Product"] = relationship(back_populates="attributes")
+    values: Mapped[list["ProductVariantAttributeValue"]] = relationship(
+        back_populates="attribute", cascade="all, delete-orphan", lazy="selectin",
+        order_by="ProductVariantAttributeValue.position",
+    )
 
     __table_args__ = (
-        UniqueConstraint("product_id", "attribute", "value", name="uq_variant_option"),
+        UniqueConstraint("product_id", "name", name="uq_variant_attribute_name"),
     )
 
 
-class PriceList(Base, TimestampMixin):
-    """Tier- and currency-scoped pricing.
+class ProductVariantAttributeValue(Base, TimestampMixin):
+    """One value on an axis: "Black", "8GB"."""
 
-    adjustment_percent expresses the mockup's "Price Rule" column: 0 is
-    "Price, no adjustment" and 10 is "Price minus 10 percent base".
-    """
-
-    __tablename__ = "price_lists"
+    __tablename__ = "product_variant_attribute_values"
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
     )
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    # NULL tier = the global fallback list.
-    tier_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("customer_tiers.id", ondelete="RESTRICT"), nullable=True
-    )
-    currency: Mapped[str] = mapped_column(String(3), default="USD", nullable=False)
-    adjustment_percent: Mapped[float] = mapped_column(PERCENT, default=0, nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-
-    tier: Mapped[Optional["CustomerTier"]] = relationship(lazy="selectin")
-    items: Mapped[list["PriceListItem"]] = relationship(
-        back_populates="price_list", cascade="all, delete-orphan", lazy="selectin"
-    )
-
-    __table_args__ = (
-        CheckConstraint(
-            "adjustment_percent >= -100 AND adjustment_percent <= 100",
-            name="ck_price_list_adjustment_range",
-        ),
-        # Two active lists for the same tier and currency make price resolution
-        # non-deterministic, and you would only find out when a demo quote
-        # priced differently on a refresh.
-        Index(
-            "uq_price_list_active_tier_currency", "tier_id", "currency",
-            unique=True, postgresql_where=text("is_active"),
-        ),
-    )
-
-
-class PriceListItem(Base, TimestampMixin):
-    """An absolute per-product override. Replaces the list rule; does not stack."""
-
-    __tablename__ = "price_list_items"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
-    )
-    price_list_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("price_lists.id", ondelete="CASCADE"),
+    attribute_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variant_attributes.id", ondelete="CASCADE"),
         index=True, nullable=False,
     )
-    product_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
-    )
-    unit_price: Mapped[float] = mapped_column(MONEY, nullable=False)
+    value: Mapped[str] = mapped_column(String(100), nullable=False)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
-    price_list: Mapped["PriceList"] = relationship(back_populates="items")
-    product: Mapped["Product"] = relationship(lazy="selectin")
+    attribute: Mapped["ProductVariantAttribute"] = relationship(back_populates="values")
 
     __table_args__ = (
-        UniqueConstraint("price_list_id", "product_id", name="uq_price_list_item"),
-        CheckConstraint("unit_price >= 0", name="ck_price_list_item_non_negative"),
+        UniqueConstraint("attribute_id", "value", name="uq_variant_attribute_value"),
+    )
+
+
+class ProductVariant(Base, TimestampMixin):
+    """One sellable combination, and the only thing that carries a SKU.
+
+    Every product owns at least one: a product without variants gets a single
+    hidden "Default" row, so pricing, stock and quotation lines all key on a
+    variant and there is never a second code path.
+
+    The combination lives in `options` rather than a join table. That is what
+    makes Generate Variants idempotent: regenerating after the admin adds a
+    value matches existing rows on their options payload and inserts only the
+    genuinely new combinations, so SKUs, quantities and prices already typed
+    into the matrix survive.
+    """
+
+    __tablename__ = "product_variants"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
+    )
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    sku: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    options: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+    unit_cost: Mapped[float] = mapped_column(MONEY, default=0, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    product: Mapped["Product"] = relationship(back_populates="variants")
+    prices: Mapped[list["VariantPrice"]] = relationship(
+        back_populates="variant", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("product_id", "name", name="uq_product_variant_name"),
+        CheckConstraint("unit_cost >= 0", name="ck_variant_cost_non_negative"),
+    )
+
+
+class VariantPrice(Base, TimestampMixin):
+    """The price of one variant, for one customer tier, in one currency.
+
+    The admin types one currency per tier and the server computes and stores the
+    rest from the FX rate, marking the typed cell with is_entered. Storing
+    rather than converting on read means a later rate change cannot silently
+    move a price a customer was already quoted.
+    """
+
+    __tablename__ = "variant_prices"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True
+    )
+    variant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("product_variants.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    tier_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("customer_tiers.id", ondelete="CASCADE"),
+        index=True, nullable=False,
+    )
+    currency_code: Mapped[str] = mapped_column(
+        String(3), ForeignKey("currencies.code", ondelete="RESTRICT"), nullable=False
+    )
+    unit_price: Mapped[float] = mapped_column(UNIT_PRICE, default=0, nullable=False)
+    # True on the cell the admin actually typed; the others are FX-derived.
+    is_entered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    variant: Mapped["ProductVariant"] = relationship(back_populates="prices")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "variant_id", "tier_id", "currency_code", name="uq_variant_price"
+        ),
+        CheckConstraint("unit_price >= 0", name="ck_variant_price_non_negative"),
     )
 
 

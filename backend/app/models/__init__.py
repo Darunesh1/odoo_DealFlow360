@@ -12,8 +12,9 @@ from app.models.billing import (
     Subscription, SubscriptionEvent, SubscriptionEventType, SubscriptionStatus,
 )
 from app.models.catalog import (
-    PairingSource, PriceList, PriceListItem, Product, ProductCategory,
-    ProductPairing, ProductUnit, ProductVariantOption, RecurringInterval,
+    CategoryDiscountLimit, Currency, PairingSource, Product, ProductPairing,
+    ProductStatus, ProductUnit, ProductVariant, ProductVariantAttribute,
+    ProductVariantAttributeValue, RecurringInterval, VariantPrice,
 )
 from app.models.customer import Customer, CustomerTier, SalesTeam
 from app.models.fulfillment import (
@@ -31,16 +32,17 @@ __all__ = [
     "AlertStatus", "AlertType", "AllocationStatus", "Approval",
     "ApprovalLineSnapshot", "ApprovalRule", "ApprovalRuleStep", "ApprovalStatus",
     "ApprovalStep", "ApprovalStepStatus", "ApprovalTrigger", "AuditAction",
-    "AuditLog", "BillingTiming", "ChangeRequestStatus", "CreditNote",
-    "CreditNoteStatus", "Customer", "CustomerTier", "DealHealthAlert",
-    "Fulfillment", "FulfillmentAllocation", "FulfillmentStatus", "Invoice",
-    "InvoiceKind", "InvoiceLine", "InvoiceLineType", "InvoiceStatus",
-    "LineSource", "PairingSource", "Payment", "PaymentMethod", "PriceList",
-    "PriceListItem", "Product", "ProductCategory", "ProductPairing",
-    "ProductUnit", "ProductVariantOption", "Quotation",
-    "QuotationChangeRequest", "QuotationComment", "QuotationLine",
-    "QuotationStatus", "RecurringInterval", "RiskBand", "Role", "SalesRecord",
-    "SalesTeam", "Shipment", "ShipmentLine", "ShipmentStatus", "SplitStrategy",
-    "StockItem", "Subscription", "SubscriptionEvent", "SubscriptionEventType",
-    "SubscriptionStatus", "TimestampMixin", "User", "UserRole", "Warehouse",
+    "AuditLog", "BillingTiming", "CategoryDiscountLimit", "ChangeRequestStatus",
+    "CreditNote", "CreditNoteStatus", "Currency", "Customer", "CustomerTier",
+    "DealHealthAlert", "Fulfillment", "FulfillmentAllocation",
+    "FulfillmentStatus", "Invoice", "InvoiceKind", "InvoiceLine",
+    "InvoiceLineType", "InvoiceStatus", "LineSource", "PairingSource",
+    "Payment", "PaymentMethod", "Product", "ProductPairing", "ProductStatus",
+    "ProductUnit", "ProductVariant", "ProductVariantAttribute",
+    "ProductVariantAttributeValue", "Quotation", "QuotationChangeRequest",
+    "QuotationComment", "QuotationLine", "QuotationStatus", "RecurringInterval",
+    "RiskBand", "Role", "SalesRecord", "SalesTeam", "Shipment", "ShipmentLine",
+    "ShipmentStatus", "SplitStrategy", "StockItem", "Subscription",
+    "SubscriptionEvent", "SubscriptionEventType", "SubscriptionStatus",
+    "TimestampMixin", "User", "UserRole", "VariantPrice", "Warehouse",
 ]
