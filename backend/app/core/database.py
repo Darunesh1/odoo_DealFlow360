@@ -1,6 +1,7 @@
 import logging
 from typing import AsyncGenerator
 import asyncpg
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -89,10 +90,29 @@ async def init_db() -> None:
     logger.info("Initializing database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Lightweight compatibility migration for the hackathon branch. The
+        # current schema is mostly create-all driven, so additive columns need a
+        # tiny startup fix when an existing database already has the old table.
+        has_recipient = await conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'quotations'
+                  AND column_name = 'recipient_email'
+                """
+            )
+        )
+        if has_recipient.first() is None:
+            await conn.execute(
+                text("ALTER TABLE quotations ADD COLUMN recipient_email VARCHAR(255)")
+            )
     logger.info("Database tables initialized successfully.")
 
     # Imported here rather than at module scope to avoid a
     # database -> seed -> services -> models -> database import cycle.
-    from app.core.seed import seed_users
+    from app.core.seed import seed_demo_data, seed_users
 
+    await seed_demo_data()
     await seed_users()

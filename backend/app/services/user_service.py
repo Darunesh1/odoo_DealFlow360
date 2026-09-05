@@ -52,12 +52,14 @@ async def create_invited_user(
     email: str,
     full_name: Optional[str],
     roles: Iterable[Role],
+    customer_id: Optional[uuid.UUID] = None,
 ) -> User:
     """Creates an account that cannot be signed into until its invite is accepted."""
     db_user = User(
         email=normalize_email(email),
         hashed_password=unusable_password(),
         full_name=full_name,
+        customer_id=customer_id,
         is_active=True,
         is_verified=False,
         role_links=[UserRole(role=Role(r)) for r in dict.fromkeys(roles)],

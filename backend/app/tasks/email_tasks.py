@@ -159,3 +159,42 @@ def send_password_reset_email(email: str, token: str, full_name: str = "") -> st
         button_url=link,
     )
     return send_email(email, "Reset your password", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_customer_portal_email")
+def send_customer_portal_email(
+    email: str,
+    customer_name: str = "",
+    quotation_number: str = "",
+    needs_invite: bool = False,
+    token: Optional[str] = None,
+) -> str:
+    """Sends a customer-facing quotation access email."""
+    if needs_invite and token:
+        link = f"{settings.FRONTEND_URL}/accept-invite?token={token}"
+        heading = f"Quotation {quotation_number} is ready"
+        body = (
+            f"<p>Hi {customer_name or 'there'},</p>"
+            "<p>Your quotation is ready. Create an account to view it in the portal.</p>"
+            f"<p style='font-size: 13px; color: #666;'>If you already have access, you can still use this link to finish setup. "
+            "If you were not expecting this email, you can ignore it.</p>"
+        )
+        button_label = "Create account"
+    else:
+        link = f"{settings.FRONTEND_URL}/login"
+        heading = f"Quotation {quotation_number} is ready"
+        body = (
+            f"<p>Hi {customer_name or 'there'},</p>"
+            "<p>Your quotation is ready. Log in to view it in the portal.</p>"
+            "<p style='font-size: 13px; color: #666;'>If you were not expecting this email, you can ignore it.</p>"
+        )
+        button_label = "Log in"
+
+    html = render_email(
+        heading=heading,
+        body_html=body,
+        button_label=button_label,
+        button_url=link,
+        accent="#0F766E",
+    )
+    return send_email(email, f"Quotation {quotation_number} is ready", html)
