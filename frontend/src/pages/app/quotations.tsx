@@ -38,6 +38,7 @@ import type {
   Customer,
   PriceList,
   Product,
+  StockItem,
   Quotation,
   QuotationCreateInput,
   QuotationLine,
@@ -111,7 +112,17 @@ function LineEditor({
           <p className="text-xs text-muted-foreground">
             {line.category_name ?? "—"} · {line.source}
           </p>
+          <p className="text-xs text-muted-foreground">
+            {line.warehouse_name
+              ? `${line.warehouse_name} (${line.warehouse_code ?? "—"})`
+              : "Warehouse not set"}
+          </p>
         </div>
+      </TableCell>
+      <TableCell className="w-32 text-xs text-muted-foreground">
+        {line.stock_available_at_entry != null
+          ? `${line.stock_available_at_entry} available`
+          : "—"}
       </TableCell>
       <TableCell className="w-24">
         <Input
@@ -203,6 +214,21 @@ export default function QuotationsPage() {
   const products = productsQuery.data ?? []
   const priceLists = priceListsQuery.data ?? []
   const selectedQuotation = selectedQuotationQuery.data ?? null
+  const selectedProductStockQuery = useQuery({
+    queryKey: ["lookups", "product-stock", newLineProductId],
+    queryFn: async () =>
+      (await api.get<StockItem[]>(`/lookups/products/${newLineProductId}/stock`)).data,
+    enabled: Boolean(newLineProductId),
+  })
+  const selectedProductStock = selectedProductStockQuery.data ?? []
+  const selectedWarehouse = selectedProductStock[0] ?? null
+  const requestedQuantity = Number(newLineQuantity) || 0
+  const canAddLine =
+    Boolean(selectedQuotationId) &&
+    Boolean(newLineProductId) &&
+    Boolean(selectedWarehouse) &&
+    requestedQuantity > 0 &&
+    requestedQuantity <= (selectedWarehouse?.quantity_available ?? 0)
 
   const selectedCustomer = useMemo(
     () => customers.find((customer) => customer.id === customerId) ?? null,
@@ -551,6 +577,13 @@ export default function QuotationsPage() {
                         ))}
                       </SelectContent>
                     </Select>
+                    {newLineProductId && (
+                      <p className="text-xs text-muted-foreground">
+                        {selectedWarehouse
+                          ? `Warehouse: ${selectedWarehouse.warehouse_name} (${selectedWarehouse.warehouse_code}) · ${selectedWarehouse.quantity_available} available`
+                          : "No active warehouse stock available for this product."}
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-2">
                     <Label>Quantity</Label>
@@ -575,11 +608,21 @@ export default function QuotationsPage() {
                   <div className="md:col-span-4">
                     <Button
                       onClick={() => addLine.mutate()}
-                      disabled={addLine.isPending || !newLineProductId}
+                      disabled={addLine.isPending || !canAddLine}
                     >
                       <PlusIcon className="size-4" />
                       Add line
                     </Button>
+                    {newLineProductId && !selectedWarehouse && (
+                      <p className="text-xs text-muted-foreground">
+                        This product has no active warehouse stock available.
+                      </p>
+                    )}
+                    {selectedWarehouse && requestedQuantity > selectedWarehouse.quantity_available && (
+                      <p className="text-xs text-muted-foreground">
+                        Requested quantity exceeds the available stock in the selected warehouse.
+                      </p>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -593,6 +636,7 @@ export default function QuotationsPage() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>Product</TableHead>
+                        <TableHead className="w-40">Warehouse</TableHead>
                         <TableHead className="w-24">Qty</TableHead>
                         <TableHead className="w-28">Discount %</TableHead>
                         <TableHead className="text-right">Unit price</TableHead>
@@ -603,7 +647,7 @@ export default function QuotationsPage() {
                     <TableBody>
                       {selectedQuotation.lines.length === 0 ? (
                         <TableRow>
-                          <TableCell colSpan={6} className="py-10 text-center text-sm text-muted-foreground">
+                          <TableCell colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
                             Add the first line to build the quote.
                           </TableCell>
                         </TableRow>

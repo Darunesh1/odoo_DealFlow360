@@ -195,8 +195,13 @@ export interface QuotationLine {
   position: number
   product_id: string | null
   category_id: string | null
+  warehouse_id: string | null
   product_name: string
   category_name: string | null
+  warehouse_name: string | null
+  warehouse_code: string | null
+  warehouse_bin_location: string | null
+  stock_available_at_entry: number | null
   quantity: number
   unit_price: number
   list_price_at_entry: number
