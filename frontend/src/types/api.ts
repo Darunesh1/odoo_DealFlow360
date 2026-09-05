@@ -116,12 +116,11 @@ export interface Customer {
   tier: CustomerTier
 }
 
+/** A derived cell: base price converted, less that tier's discount. */
 export interface VariantPrice {
   tier_id: string
   currency_code: string
   unit_price: number
-  /** True on the cell the admin typed; the rest are FX-derived. */
-  is_entered: boolean
 }
 
 export interface VariantStock {
@@ -150,7 +149,9 @@ export interface ProductVariant {
   sku: string
   name: string
   options: Record<string, string>
+  /** The two numbers an admin types, both in the base currency. */
   unit_cost: number
+  base_price: number
   is_default: boolean
   is_active: boolean
   prices: VariantPrice[]
@@ -195,6 +196,16 @@ export interface ProductListRow {
 }
 
 /** The three KPI boxes on the product catalog screen. */
+export const PRODUCT_SORTS = [
+  "name",
+  "category",
+  "variants",
+  "price",
+  "tax",
+  "status",
+] as const
+export type ProductSort = (typeof PRODUCT_SORTS)[number]
+
 export interface CatalogStats {
   products_active: number
   products_archived: number
@@ -219,10 +230,6 @@ export interface Warehouse {
   code: string
   name: string
   address: string | null
-  shipping_base_cost: number
-  shipping_cost_per_unit: number
-  shipping_cost_weight: number
-  split_priority: number
   is_active: boolean
   created_at: string
   updated_at: string
@@ -389,8 +396,6 @@ export interface CurrencyUpdateInput {
   symbol?: string
   rate_to_base?: number
   is_active?: boolean
-  /** Re-derives every FX-derived price; typed cells are never touched. */
-  recompute_prices?: boolean
 }
 
 export interface CategoryLimitCreateInput {
@@ -440,10 +445,11 @@ export interface ProductUpdateInput {
 export interface VariantRowInput {
   id: string
   sku: string
-  unit_cost?: number
+  /** Both required and both in the base currency. */
+  unit_cost: number
+  base_price: number
   is_active?: boolean
-  /** Only the cells the admin typed; the server fills the other currencies. */
-  prices: { tier_id: string; currency_code: string; unit_price: number }[]
+  /** Required for every active warehouse unless the product is a subscription. */
   stock: { warehouse_id: string; quantity_on_hand: number }[]
 }
 
@@ -455,10 +461,6 @@ export interface WarehouseCreateInput {
   code: string
   name: string
   address?: string | null
-  shipping_base_cost?: number
-  shipping_cost_per_unit?: number
-  shipping_cost_weight?: number
-  split_priority?: number
   is_active?: boolean
 }
 
@@ -466,10 +468,6 @@ export interface WarehouseUpdateInput {
   code?: string
   name?: string
   address?: string | null
-  shipping_base_cost?: number
-  shipping_cost_per_unit?: number
-  shipping_cost_weight?: number
-  split_priority?: number
   is_active?: boolean
 }
 

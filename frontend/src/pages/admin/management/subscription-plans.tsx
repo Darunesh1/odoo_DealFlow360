@@ -86,7 +86,7 @@ export default function SubscriptionPlansTab() {
                     // The base-currency price is enough here; the full grid
                     // lives on the product form.
                     const price = variant?.prices.find(
-                      (item) => item.tier_id === tier.id && item.is_entered
+                      (item) => item.tier_id === tier.id
                     )
                     return (
                       <TableCell key={tier.id} className="text-right tabular-nums">

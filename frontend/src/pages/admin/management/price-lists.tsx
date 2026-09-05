@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { PlusIcon, Trash2Icon } from "lucide-react"
+import { PlusIcon, SearchIcon, Trash2Icon } from "lucide-react"
 import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { SortableHeader } from "@/components/sortable-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useTableSort } from "@/hooks/use-table-sort"
 import { api, errorMessage } from "@/lib/api"
 import type { Currency, PriceMatrixRow } from "@/types/api"
 
@@ -54,6 +56,9 @@ export default function PriceListsTab() {
     )
   }, [matrix, search])
 
+  const sort = useTableSort(filtered, "product_name")
+  const currencySort = useTableSort(currencies, "code")
+
   const refresh = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ["admin", "currencies"] }),
@@ -85,13 +90,11 @@ export default function PriceListsTab() {
       (
         await api.patch<Currency>(`/admin/currencies/${target}`, {
           rate_to_base: value,
-          // Only FX-derived cells move. A price the admin typed stays as typed.
-          recompute_prices: true,
         })
       ).data,
     onSuccess: async () => {
       await refresh()
-      toast.success("Rate saved and derived prices recomputed.")
+      toast.success("Rate saved. Prices in that currency recalculated.")
     },
     onError: (caught) => toast.error(errorMessage(caught, "Could not save the rate.")),
   })
@@ -120,14 +123,30 @@ export default function PriceListsTab() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-24">Code</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead className="w-40">Rate to base</TableHead>
+                <SortableHeader
+                  column="code"
+                  active={currencySort.sortKey}
+                  direction={currencySort.direction}
+                  onSort={currencySort.toggle}
+                  className="min-w-[8rem]"
+                >
+                  Code
+                </SortableHeader>
+                <SortableHeader
+                  column="name"
+                  active={currencySort.sortKey}
+                  direction={currencySort.direction}
+                  onSort={currencySort.toggle}
+                  className="min-w-[14rem]"
+                >
+                  Name
+                </SortableHeader>
+                <TableHead className="min-w-[11rem]">Rate to base</TableHead>
                 <TableHead className="w-16" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {currencies.map((currency) => (
+              {currencySort.sorted.map((currency) => (
                 <TableRow key={currency.code}>
                   <TableCell className="font-medium">
                     {currency.code}
@@ -211,31 +230,82 @@ export default function PriceListsTab() {
           <div>
             <CardTitle className="text-base">Price matrix</CardTitle>
             <CardDescription>
-              Every SKU at every tier and currency. Read only: prices are set on the
-              product itself, so there is only ever one place a price comes from.
+              Every SKU at every tier and currency. Read only, and calculated: the unit
+              price on the product, converted, less that tier&apos;s discount.
             </CardDescription>
           </div>
-          <Input
-            placeholder="Filter by product, SKU or tier"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            className="max-w-sm"
-          />
+          <div className="relative max-w-sm">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Filter by product, SKU or tier"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              className="pl-8"
+            />
+          </div>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Product</TableHead>
-                <TableHead>Variant</TableHead>
-                <TableHead>SKU</TableHead>
-                <TableHead>Tier</TableHead>
-                <TableHead className="w-24">Currency</TableHead>
-                <TableHead className="w-32 text-right">Price</TableHead>
+                <SortableHeader
+                  column="product_name"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[14rem]"
+                >
+                  Product
+                </SortableHeader>
+                <SortableHeader
+                  column="variant_name"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[11rem]"
+                >
+                  Variant
+                </SortableHeader>
+                <SortableHeader
+                  column="sku"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[16rem]"
+                >
+                  SKU
+                </SortableHeader>
+                <SortableHeader
+                  column="tier_name"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[9rem]"
+                >
+                  Tier
+                </SortableHeader>
+                <SortableHeader
+                  column="currency_code"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[8rem]"
+                >
+                  Currency
+                </SortableHeader>
+                <SortableHeader
+                  column="unit_price"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[9rem]"
+                >
+                  Price
+                </SortableHeader>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.map((row) => (
+              {sort.sorted.map((row) => (
                 <TableRow key={`${row.variant_id}-${row.tier_name}-${row.currency_code}`}>
                   <TableCell className="font-medium">{row.product_name}</TableCell>
                   <TableCell>{row.variant_name}</TableCell>

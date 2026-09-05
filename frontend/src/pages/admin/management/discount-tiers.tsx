@@ -3,6 +3,7 @@ import { PlusIcon, Trash2Icon } from "lucide-react"
 import { useState } from "react"
 import { toast } from "sonner"
 
+import { SortableHeader } from "@/components/sortable-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
@@ -21,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useTableSort } from "@/hooks/use-table-sort"
 import { api, errorMessage } from "@/lib/api"
 import type { CategoryLimit, CustomerTier } from "@/types/api"
 
@@ -75,6 +77,10 @@ export default function DiscountTiersTab() {
   const tiers = tiersQuery.data ?? []
   const limits = limitsQuery.data ?? []
   const rules = rulesQuery.data ?? []
+
+  // Tiers arrive ordered by ceiling; sorting by name is the other view worth having.
+  const tierSort = useTableSort(tiers, "max_discount_percent")
+  const limitSort = useTableSort(limits, "category")
 
   const refreshTiers = () =>
     queryClient.invalidateQueries({ queryKey: ["admin", "customer-tiers"] })
@@ -166,20 +172,38 @@ export default function DiscountTiersTab() {
           <CardHeader>
             <CardTitle className="text-base">Tier Discount Ceilings</CardTitle>
             <CardDescription>
-              The most a customer on this tier may be discounted, on any line.
+              Does two jobs: the discount already baked into that tier&apos;s prices, and
+              the ceiling a rep may discount further before a line is flagged. Changing
+              it reprices the catalog.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Tier</TableHead>
-                  <TableHead className="w-40">Max Discount</TableHead>
+                  <SortableHeader
+                    column="name"
+                    active={tierSort.sortKey}
+                    direction={tierSort.direction}
+                    onSort={tierSort.toggle}
+                    className="min-w-[12rem]"
+                  >
+                    Tier
+                  </SortableHeader>
+                  <SortableHeader
+                    column="max_discount_percent"
+                    active={tierSort.sortKey}
+                    direction={tierSort.direction}
+                    onSort={tierSort.toggle}
+                    className="min-w-[10rem]"
+                  >
+                    Max Discount
+                  </SortableHeader>
                   <TableHead className="w-16" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tiers.map((tier) => (
+                {tierSort.sorted.map((tier) => (
                   <TableRow key={tier.id}>
                     <TableCell className="font-medium">{tier.name}</TableCell>
                     <TableCell>
@@ -260,13 +284,29 @@ export default function DiscountTiersTab() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Category</TableHead>
-                  <TableHead className="w-40">Max Discount</TableHead>
+                  <SortableHeader
+                    column="category"
+                    active={limitSort.sortKey}
+                    direction={limitSort.direction}
+                    onSort={limitSort.toggle}
+                    className="min-w-[12rem]"
+                  >
+                    Category
+                  </SortableHeader>
+                  <SortableHeader
+                    column="max_discount_percent"
+                    active={limitSort.sortKey}
+                    direction={limitSort.direction}
+                    onSort={limitSort.toggle}
+                    className="min-w-[10rem]"
+                  >
+                    Max Discount
+                  </SortableHeader>
                   <TableHead className="w-16" />
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {limits.map((limit) => (
+                {limitSort.sorted.map((limit) => (
                   <TableRow key={limit.id}>
                     <TableCell className="font-medium">{limit.category}</TableCell>
                     <TableCell>

@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { PlusIcon, Trash2Icon } from "lucide-react"
-import { useState } from "react"
+import { PlusIcon, SearchIcon, Trash2Icon } from "lucide-react"
+import { useMemo, useState } from "react"
 import { toast } from "sonner"
 
+import { SortableHeader } from "@/components/sortable-header"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -21,22 +22,16 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { useTableSort } from "@/hooks/use-table-sort"
 import { api, errorMessage } from "@/lib/api"
 import type { StockItem, Warehouse } from "@/types/api"
 
-const EMPTY = {
-  code: "",
-  name: "",
-  address: "",
-  shipping_base_cost: "0",
-  shipping_cost_per_unit: "0",
-  shipping_cost_weight: "1",
-  split_priority: "100",
-}
+const EMPTY = { code: "", name: "", address: "" }
 
 export default function WarehousesTab() {
   const queryClient = useQueryClient()
   const [form, setForm] = useState(EMPTY)
+  const [stockSearch, setStockSearch] = useState("")
 
   const warehousesQuery = useQuery({
     queryKey: ["admin", "warehouses"],
@@ -49,6 +44,19 @@ export default function WarehousesTab() {
 
   const warehouses = warehousesQuery.data ?? []
   const stock = stockQuery.data ?? []
+
+  const warehouseSort = useTableSort(warehouses, "name")
+  const filteredStock = useMemo(() => {
+    const term = stockSearch.trim().toLowerCase()
+    if (!term) return stock
+    return stock.filter(
+      (item) =>
+        item.product_name.toLowerCase().includes(term) ||
+        item.sku.toLowerCase().includes(term) ||
+        item.warehouse_name.toLowerCase().includes(term)
+    )
+  }, [stock, stockSearch])
+  const stockSort = useTableSort(filteredStock, "warehouse_name")
 
   const refresh = async () => {
     await Promise.all([
@@ -64,10 +72,6 @@ export default function WarehousesTab() {
           code: form.code.trim().toUpperCase(),
           name: form.name.trim(),
           address: form.address || null,
-          shipping_base_cost: Number(form.shipping_base_cost) || 0,
-          shipping_cost_per_unit: Number(form.shipping_cost_per_unit) || 0,
-          shipping_cost_weight: Number(form.shipping_cost_weight) || 1,
-          split_priority: Number(form.split_priority) || 100,
         })
       ).data,
     onSuccess: async () => {
@@ -104,55 +108,63 @@ export default function WarehousesTab() {
         <CardHeader>
           <CardTitle className="text-base">Warehouses</CardTitle>
           <CardDescription>
-            The three cost columns are what the split planner minimises: base cost plus
-            per-unit cost, scaled by weight. Priority breaks ties.
+            Where stock sits. Quantities are entered per SKU on the product form.
           </CardDescription>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-24">Code</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Address</TableHead>
-                <TableHead className="w-28">Base cost</TableHead>
-                <TableHead className="w-28">Per unit</TableHead>
-                <TableHead className="w-24">Weight</TableHead>
-                <TableHead className="w-24">Priority</TableHead>
+                <SortableHeader
+                  column="code"
+                  active={warehouseSort.sortKey}
+                  direction={warehouseSort.direction}
+                  onSort={warehouseSort.toggle}
+                  className="min-w-[7rem]"
+                >
+                  Code
+                </SortableHeader>
+                <SortableHeader
+                  column="name"
+                  active={warehouseSort.sortKey}
+                  direction={warehouseSort.direction}
+                  onSort={warehouseSort.toggle}
+                  className="min-w-[16rem]"
+                >
+                  Name
+                </SortableHeader>
+                <TableHead className="min-w-[18rem]">Address</TableHead>
                 <TableHead className="w-16" />
               </TableRow>
             </TableHeader>
             <TableBody>
-              {warehouses.map((warehouse) => (
+              {warehouseSort.sorted.map((warehouse) => (
                 <TableRow key={warehouse.id}>
                   <TableCell className="font-medium">{warehouse.code}</TableCell>
-                  <TableCell>{warehouse.name}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {warehouse.address ?? "—"}
+                  <TableCell>
+                    <Input
+                      className="h-8"
+                      defaultValue={warehouse.name}
+                      onBlur={(event) => {
+                        const next = event.target.value.trim()
+                        if (next && next !== warehouse.name) {
+                          patch.mutate({ id: warehouse.id, body: { name: next } })
+                        }
+                      }}
+                    />
                   </TableCell>
-                  {(
-                    [
-                      ["shipping_base_cost", warehouse.shipping_base_cost],
-                      ["shipping_cost_per_unit", warehouse.shipping_cost_per_unit],
-                      ["shipping_cost_weight", warehouse.shipping_cost_weight],
-                      ["split_priority", warehouse.split_priority],
-                    ] as const
-                  ).map(([field, value]) => (
-                    <TableCell key={field}>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        className="h-8 w-24"
-                        defaultValue={value}
-                        onBlur={(event) => {
-                          const next = Number(event.target.value)
-                          if (next !== value) {
-                            patch.mutate({ id: warehouse.id, body: { [field]: next } })
-                          }
-                        }}
-                      />
-                    </TableCell>
-                  ))}
+                  <TableCell>
+                    <Input
+                      className="h-8"
+                      defaultValue={warehouse.address ?? ""}
+                      onBlur={(event) => {
+                        const next = event.target.value
+                        if (next !== (warehouse.address ?? "")) {
+                          patch.mutate({ id: warehouse.id, body: { address: next || null } })
+                        }
+                      }}
+                    />
+                  </TableCell>
                   <TableCell>
                     <Button
                       variant="ghost"
@@ -165,6 +177,13 @@ export default function WarehousesTab() {
                   </TableCell>
                 </TableRow>
               ))}
+              {!warehouses.length && (
+                <TableRow>
+                  <TableCell colSpan={4} className="text-sm text-muted-foreground">
+                    No warehouses yet.
+                  </TableCell>
+                </TableRow>
+              )}
             </TableBody>
           </Table>
         </CardContent>
@@ -183,59 +202,18 @@ export default function WarehousesTab() {
               onChange={(event) => setForm({ ...form, code: event.target.value })}
             />
           </div>
-          <div className="space-y-2 md:col-span-2">
+          <div className="space-y-2">
             <Label>Name</Label>
             <Input
               value={form.name}
               onChange={(event) => setForm({ ...form, name: event.target.value })}
             />
           </div>
-          <div className="space-y-2">
+          <div className="space-y-2 md:col-span-2">
             <Label>Address</Label>
             <Input
               value={form.address}
               onChange={(event) => setForm({ ...form, address: event.target.value })}
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Shipping base cost</Label>
-            <Input
-              type="number"
-              step="0.01"
-              value={form.shipping_base_cost}
-              onChange={(event) =>
-                setForm({ ...form, shipping_base_cost: event.target.value })
-              }
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Cost per unit</Label>
-            <Input
-              type="number"
-              step="0.01"
-              value={form.shipping_cost_per_unit}
-              onChange={(event) =>
-                setForm({ ...form, shipping_cost_per_unit: event.target.value })
-              }
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Cost weight</Label>
-            <Input
-              type="number"
-              step="0.01"
-              value={form.shipping_cost_weight}
-              onChange={(event) =>
-                setForm({ ...form, shipping_cost_weight: event.target.value })
-              }
-            />
-          </div>
-          <div className="space-y-2">
-            <Label>Split priority</Label>
-            <Input
-              type="number"
-              value={form.split_priority}
-              onChange={(event) => setForm({ ...form, split_priority: event.target.value })}
             />
           </div>
           <div className="md:col-span-4">
@@ -251,26 +229,83 @@ export default function WarehousesTab() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Stock</CardTitle>
-          <CardDescription>
-            Per SKU, per warehouse. Quantities are entered on the product form.
-          </CardDescription>
+        <CardHeader className="gap-3">
+          <div>
+            <CardTitle className="text-base">Stock</CardTitle>
+            <CardDescription>Per SKU, per warehouse.</CardDescription>
+          </div>
+          <div className="relative max-w-sm">
+            <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={stockSearch}
+              onChange={(event) => setStockSearch(event.target.value)}
+              placeholder="Search product, SKU or warehouse"
+              className="pl-8"
+            />
+          </div>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Warehouse</TableHead>
-                <TableHead>Product</TableHead>
-                <TableHead>SKU</TableHead>
-                <TableHead className="w-24 text-right">In stock</TableHead>
-                <TableHead className="w-24 text-right">Reserved</TableHead>
-                <TableHead className="w-24 text-right">Available</TableHead>
+                <SortableHeader
+                  column="warehouse_name"
+                  active={stockSort.sortKey}
+                  direction={stockSort.direction}
+                  onSort={stockSort.toggle}
+                  className="min-w-[12rem]"
+                >
+                  Warehouse
+                </SortableHeader>
+                <SortableHeader
+                  column="product_name"
+                  active={stockSort.sortKey}
+                  direction={stockSort.direction}
+                  onSort={stockSort.toggle}
+                  className="min-w-[16rem]"
+                >
+                  Product
+                </SortableHeader>
+                <SortableHeader
+                  column="sku"
+                  active={stockSort.sortKey}
+                  direction={stockSort.direction}
+                  onSort={stockSort.toggle}
+                  className="min-w-[16rem]"
+                >
+                  SKU
+                </SortableHeader>
+                <SortableHeader
+                  column="quantity_on_hand"
+                  active={stockSort.sortKey}
+                  direction={stockSort.direction}
+                  onSort={stockSort.toggle}
+                  className="min-w-[7rem]"
+                >
+                  In stock
+                </SortableHeader>
+                <SortableHeader
+                  column="quantity_reserved"
+                  active={stockSort.sortKey}
+                  direction={stockSort.direction}
+                  onSort={stockSort.toggle}
+                  className="min-w-[7rem]"
+                >
+                  Reserved
+                </SortableHeader>
+                <SortableHeader
+                  column="quantity_available"
+                  active={stockSort.sortKey}
+                  direction={stockSort.direction}
+                  onSort={stockSort.toggle}
+                  className="min-w-[7rem]"
+                >
+                  Available
+                </SortableHeader>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {stock.map((item) => (
+              {stockSort.sorted.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>{item.warehouse_name}</TableCell>
                   <TableCell>
@@ -280,21 +315,15 @@ export default function WarehousesTab() {
                     )}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{item.sku}</TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {item.quantity_on_hand}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {item.quantity_reserved}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {item.quantity_available}
-                  </TableCell>
+                  <TableCell className="tabular-nums">{item.quantity_on_hand}</TableCell>
+                  <TableCell className="tabular-nums">{item.quantity_reserved}</TableCell>
+                  <TableCell className="tabular-nums">{item.quantity_available}</TableCell>
                 </TableRow>
               ))}
-              {!stock.length && (
+              {!filteredStock.length && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-sm text-muted-foreground">
-                    Nothing stocked yet.
+                    {stockSearch ? "Nothing matches that search." : "Nothing stocked yet."}
                   </TableCell>
                 </TableRow>
               )}

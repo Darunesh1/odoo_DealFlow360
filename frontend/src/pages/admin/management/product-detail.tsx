@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeftIcon, PlusIcon, Trash2Icon, WandSparklesIcon } from "lucide-react"
+import { ArrowLeftIcon, PlusIcon, Trash2Icon, WandSparklesIcon, XIcon } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { Link, useNavigate, useParams } from "react-router-dom"
 import { toast } from "sonner"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -43,21 +44,24 @@ import {
   type Warehouse,
 } from "@/types/api"
 
-/** One editable row of the matrix, keyed by variant id. */
+/** One editable row of the matrix. Only these three fields are ever typed —
+ * every tier and currency price is derived from base price. */
 interface MatrixRow {
   sku: string
   unitCost: string
-  /** warehouse id -> quantity */
+  basePrice: string
+  /** warehouse id -> quantity, as typed */
   quantity: Record<string, string>
-  /** `${tierId}:${currencyCode}` -> price, as typed */
-  price: Record<string, string>
-  /** Which currency the admin typed for each tier; the rest are derived. */
-  entered: Record<string, string>
 }
 
-const priceKey = (tierId: string, code: string) => `${tierId}:${code}`
+interface AttributeDraft {
+  name: string
+  values: string[]
+  /** The value being typed, before + commits it to a chip. */
+  pending: string
+}
 
-export default function ProductDetailPage() {
+export default function ProductDetailPage({ readOnly = false }: { readOnly?: boolean }) {
   const { productId } = useParams<{ productId: string }>()
   const isNew = !productId || productId === "new"
   const navigate = useNavigate()
@@ -71,31 +75,34 @@ export default function ProductDetailPage() {
   const [isSubscription, setIsSubscription] = useState(false)
   const [interval, setInterval] = useState<RecurringInterval>("monthly")
   const [hasVariants, setHasVariants] = useState(false)
-  const [attributes, setAttributes] = useState<{ name: string; values: string }[]>([
-    { name: "", values: "" },
+  const [attributes, setAttributes] = useState<AttributeDraft[]>([
+    { name: "", values: [], pending: "" },
   ])
   const [matrix, setMatrix] = useState<Record<string, MatrixRow>>({})
 
   const productQuery = useQuery({
-    queryKey: ["admin", "product", productId],
-    queryFn: async () => (await api.get<Product>(`/admin/products/${productId}`)).data,
+    queryKey: ["product", productId],
+    queryFn: async () => (await api.get<Product>(`/products/${productId}`)).data,
     enabled: !isNew,
   })
   const tiersQuery = useQuery({
     queryKey: ["admin", "customer-tiers"],
     queryFn: async () => (await api.get<CustomerTier[]>("/admin/customer-tiers")).data,
+    enabled: !readOnly,
   })
   const currenciesQuery = useQuery({
     queryKey: ["admin", "currencies"],
     queryFn: async () => (await api.get<Currency[]>("/admin/currencies")).data,
+    enabled: !readOnly,
   })
   const warehousesQuery = useQuery({
     queryKey: ["admin", "warehouses"],
     queryFn: async () => (await api.get<Warehouse[]>("/admin/warehouses")).data,
+    enabled: !readOnly,
   })
   const categoriesQuery = useQuery({
-    queryKey: ["admin", "categories"],
-    queryFn: async () => (await api.get<string[]>("/admin/categories")).data,
+    queryKey: ["categories"],
+    queryFn: async () => (await api.get<string[]>("/categories")).data,
   })
 
   const product = productQuery.data ?? null
@@ -108,7 +115,6 @@ export default function ProductDetailPage() {
   const categories = categoriesQuery.data ?? []
   const baseCurrency = currencies.find((item) => item.is_base) ?? currencies[0] ?? null
 
-  // Load the saved product into the form, matrix included.
   useEffect(() => {
     if (!product) return
     setName(product.name)
@@ -123,9 +129,10 @@ export default function ProductDetailPage() {
       product.attributes.length
         ? product.attributes.map((attribute) => ({
             name: attribute.name,
-            values: attribute.values.map((value) => value.value).join(", "),
+            values: attribute.values.map((value) => value.value),
+            pending: "",
           }))
-        : [{ name: "", values: "" }]
+        : [{ name: "", values: [], pending: "" }]
     )
     const next: Record<string, MatrixRow> = {}
     for (const variant of product.variants) {
@@ -133,59 +140,40 @@ export default function ProductDetailPage() {
       for (const item of variant.stock) {
         quantity[item.warehouse_id] = String(item.quantity_on_hand)
       }
-      const price: Record<string, string> = {}
-      const entered: Record<string, string> = {}
-      for (const item of variant.prices) {
-        price[priceKey(item.tier_id, item.currency_code)] = String(item.unit_price)
-        if (item.is_entered) entered[item.tier_id] = item.currency_code
-      }
       next[variant.id] = {
         sku: variant.sku,
-        unitCost: String(variant.unit_cost),
+        unitCost: variant.unit_cost ? String(variant.unit_cost) : "",
+        basePrice: variant.base_price ? String(variant.base_price) : "",
         quantity,
-        price,
-        entered,
       }
     }
     setMatrix(next)
   }, [product])
 
-  /** Typing in one currency fills the rest of that tier's row from the rate. */
-  const setPrice = (variantId: string, tierId: string, code: string, raw: string) => {
-    setMatrix((current) => {
-      const row = current[variantId]
-      if (!row) return current
-      const source = currencies.find((item) => item.code === code)
-      const price = { ...row.price, [priceKey(tierId, code)]: raw }
-      const amount = Number(raw)
-      if (source && Number.isFinite(amount) && raw !== "") {
-        for (const target of currencies) {
-          if (target.code === code) continue
-          const converted = (amount * source.rate_to_base) / target.rate_to_base
-          price[priceKey(tierId, target.code)] = converted.toFixed(2)
-        }
-      }
-      return {
-        ...current,
-        [variantId]: {
-          ...row,
-          price,
-          entered: { ...row.entered, [tierId]: code },
-        },
-      }
-    })
+  const variants = product?.variants ?? []
+  const stocked = !isSubscription
+
+  /** The formula, mirrored client-side so the grid fills as you type. The
+   * server recomputes it on save; this is preview, not the source of truth. */
+  const cellPrice = (basePrice: string, tier: CustomerTier, currency: Currency) => {
+    const amount = Number(basePrice)
+    if (!basePrice || !Number.isFinite(amount) || !baseCurrency) return null
+    const converted = (amount * baseCurrency.rate_to_base) / currency.rate_to_base
+    return converted * (1 - tier.max_discount_percent / 100)
   }
 
-  const setQuantity = (variantId: string, warehouseId: string, raw: string) => {
-    setMatrix((current) => {
-      const row = current[variantId]
-      if (!row) return current
-      return {
-        ...current,
-        [variantId]: { ...row, quantity: { ...row.quantity, [warehouseId]: raw } },
-      }
-    })
-  }
+  const rowComplete = (row: MatrixRow | undefined) =>
+    Boolean(row) &&
+    Number(row!.unitCost) > 0 &&
+    Number(row!.basePrice) > 0 &&
+    (!stocked || warehouses.every((w) => row!.quantity[w.id]?.trim() !== undefined && row!.quantity[w.id]?.trim() !== ""))
+
+  const matrixComplete =
+    variants.length > 0 && variants.every((variant) => rowComplete(matrix[variant.id]))
+
+  const attributesReady =
+    attributes.length > 0 &&
+    attributes.every((attribute) => attribute.name.trim() && attribute.values.length > 0)
 
   const generalInfo = () => ({
     name: name.trim(),
@@ -198,13 +186,10 @@ export default function ProductDetailPage() {
     has_variants: hasVariants,
     attributes: hasVariants
       ? attributes
-          .filter((attribute) => attribute.name.trim() && attribute.values.trim())
+          .filter((attribute) => attribute.name.trim() && attribute.values.length)
           .map((attribute) => ({
             name: attribute.name.trim(),
-            values: attribute.values
-              .split(",")
-              .map((value) => value.trim())
-              .filter(Boolean),
+            values: attribute.values,
           }))
       : [],
   })
@@ -217,15 +202,15 @@ export default function ProductDetailPage() {
       return (await api.patch<Product>(`/admin/products/${productId}`, generalInfo())).data
     },
     onSuccess: async (saved) => {
-      await queryClient.invalidateQueries({ queryKey: ["admin", "products"] })
-      await queryClient.invalidateQueries({ queryKey: ["admin", "catalog-stats"] })
-      await queryClient.invalidateQueries({ queryKey: ["admin", "categories"] })
+      await queryClient.invalidateQueries({ queryKey: ["products"] })
+      await queryClient.invalidateQueries({ queryKey: ["catalog-stats"] })
+      await queryClient.invalidateQueries({ queryKey: ["categories"] })
       if (isNew) {
         navigate(`/app/admin/products/${saved.id}`, { replace: true })
-        toast.success("Product created. Now set its prices.")
+        toast.success("Product created. Now set its cost, price and stock.")
         return
       }
-      queryClient.setQueryData(["admin", "product", productId], saved)
+      queryClient.setQueryData(["product", productId], saved)
       toast.success("Product saved.")
     },
     onError: (caught) => toast.error(errorMessage(caught, "Could not save the product.")),
@@ -235,8 +220,8 @@ export default function ProductDetailPage() {
     mutationFn: async () =>
       (await api.post<Product>(`/admin/products/${productId}/generate-variants`)).data,
     onSuccess: async (saved) => {
-      queryClient.setQueryData(["admin", "product", productId], saved)
-      await queryClient.invalidateQueries({ queryKey: ["admin", "catalog-stats"] })
+      queryClient.setQueryData(["product", productId], saved)
+      await queryClient.invalidateQueries({ queryKey: ["catalog-stats"] })
       toast.success(`${saved.variants.length} variant(s) ready.`)
     },
     onError: (caught) => toast.error(errorMessage(caught, "Could not generate variants.")),
@@ -244,45 +229,54 @@ export default function ProductDetailPage() {
 
   const saveMatrix = useMutation({
     mutationFn: async () => {
-      const rows: VariantRowInput[] = (product?.variants ?? []).map((variant) => {
+      const rows: VariantRowInput[] = variants.map((variant) => {
         const row = matrix[variant.id]
         return {
           id: variant.id,
           sku: row?.sku ?? variant.sku,
-          unit_cost: Number(row?.unitCost ?? 0) || 0,
-          // Only the cell the admin typed per tier; the server derives the rest.
-          prices: tiers
-            .map((tier) => {
-              const code = row?.entered[tier.id] ?? baseCurrency?.code
-              if (!code) return null
-              const value = row?.price[priceKey(tier.id, code)]
-              if (value === undefined || value === "") return null
-              return {
-                tier_id: tier.id,
-                currency_code: code,
-                unit_price: Number(value) || 0,
-              }
-            })
-            .filter((entry): entry is NonNullable<typeof entry> => entry !== null),
-          stock: warehouses
-            .map((warehouse) => ({
-              warehouse_id: warehouse.id,
-              quantity_on_hand: Number(row?.quantity[warehouse.id] ?? 0) || 0,
-            }))
-            .filter(() => !isSubscription),
+          unit_cost: Number(row?.unitCost ?? 0),
+          base_price: Number(row?.basePrice ?? 0),
+          stock: stocked
+            ? warehouses.map((warehouse) => ({
+                warehouse_id: warehouse.id,
+                quantity_on_hand: Number(row?.quantity[warehouse.id] ?? 0) || 0,
+              }))
+            : [],
         }
       })
       return (await api.put<Product>(`/admin/products/${productId}/variants`, { rows })).data
     },
     onSuccess: async (saved) => {
-      queryClient.setQueryData(["admin", "product", productId], saved)
-      await queryClient.invalidateQueries({ queryKey: ["admin", "products"] })
-      toast.success("Prices and stock saved.")
+      queryClient.setQueryData(["product", productId], saved)
+      await queryClient.invalidateQueries({ queryKey: ["products"] })
+      await queryClient.invalidateQueries({ queryKey: ["admin", "price-matrix"] })
+      toast.success("Cost, price and stock saved. Tier prices recalculated.")
     },
     onError: (caught) => toast.error(errorMessage(caught, "Could not save the matrix.")),
   })
 
-  const variants = product?.variants ?? []
+  const addValue = (index: number) => {
+    setAttributes((current) =>
+      current.map((attribute, position) => {
+        if (position !== index) return attribute
+        const value = attribute.pending.trim()
+        if (!value || attribute.values.includes(value)) {
+          return { ...attribute, pending: "" }
+        }
+        return { ...attribute, values: [...attribute.values, value], pending: "" }
+      })
+    )
+  }
+
+  const patchRow = (variantId: string, patch: Partial<MatrixRow>) =>
+    setMatrix((current) => ({
+      ...current,
+      [variantId]: { ...current[variantId], ...patch },
+    }))
+
+  if (readOnly) {
+    return <ReadOnlyProduct product={product} />
+  }
 
   return (
     <div className="space-y-6">
@@ -293,7 +287,10 @@ export default function ProductDetailPage() {
             Product catalog
           </Link>
         </Button>
-        <Button onClick={() => saveGeneral.mutate()} disabled={!name.trim() || !category.trim()}>
+        <Button
+          onClick={() => saveGeneral.mutate()}
+          disabled={!name.trim() || !category.trim() || saveGeneral.isPending}
+        >
           {isNew ? "Create product" : "Save product"}
         </Button>
       </div>
@@ -398,23 +395,23 @@ export default function ProductDetailPage() {
           <CardHeader>
             <CardTitle className="text-base">Product Variants</CardTitle>
             <CardDescription>
-              One row per attribute, values comma separated. Generating builds every
-              combination and leaves the ones you have already priced untouched.
+              Name an attribute, then add its values one at a time. Generating builds
+              every combination and leaves the ones you have already priced untouched.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-56">Attribute</TableHead>
-                  <TableHead>Values</TableHead>
+                  <TableHead className="min-w-[14rem]">Attribute</TableHead>
+                  <TableHead className="min-w-[22rem]">Values</TableHead>
                   <TableHead className="w-16" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {attributes.map((attribute, index) => (
                   <TableRow key={index}>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <Input
                         value={attribute.name}
                         placeholder="Color"
@@ -429,22 +426,70 @@ export default function ProductDetailPage() {
                         }
                       />
                     </TableCell>
-                    <TableCell>
-                      <Input
-                        value={attribute.values}
-                        placeholder="Black, Silver"
-                        onChange={(event) =>
-                          setAttributes((current) =>
-                            current.map((item, position) =>
-                              position === index
-                                ? { ...item, values: event.target.value }
-                                : item
+                    <TableCell className="space-y-2 align-top">
+                      {attribute.values.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5">
+                          {attribute.values.map((value) => (
+                            <Badge key={value} variant="secondary" className="gap-1 pr-1">
+                              {value}
+                              <button
+                                type="button"
+                                aria-label={`Remove ${value}`}
+                                className="rounded-full p-0.5 hover:bg-muted-foreground/20"
+                                onClick={() =>
+                                  setAttributes((current) =>
+                                    current.map((item, position) =>
+                                      position === index
+                                        ? {
+                                            ...item,
+                                            values: item.values.filter(
+                                              (entry) => entry !== value
+                                            ),
+                                          }
+                                        : item
+                                    )
+                                  )
+                                }
+                              >
+                                <XIcon className="size-3" />
+                              </button>
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <Input
+                          value={attribute.pending}
+                          placeholder="Add a value"
+                          onChange={(event) =>
+                            setAttributes((current) =>
+                              current.map((item, position) =>
+                                position === index
+                                  ? { ...item, pending: event.target.value }
+                                  : item
+                              )
                             )
-                          )
-                        }
-                      />
+                          }
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault()
+                              addValue(index)
+                            }
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="icon"
+                          aria-label="Add value"
+                          disabled={!attribute.pending.trim()}
+                          onClick={() => addValue(index)}
+                        >
+                          <PlusIcon className="size-4" />
+                        </Button>
+                      </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="align-top">
                       <Button
                         variant="ghost"
                         size="icon"
@@ -462,11 +507,14 @@ export default function ProductDetailPage() {
                 ))}
               </TableBody>
             </Table>
-            <div className="flex flex-wrap gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 variant="outline"
                 onClick={() =>
-                  setAttributes((current) => [...current, { name: "", values: "" }])
+                  setAttributes((current) => [
+                    ...current,
+                    { name: "", values: [], pending: "" },
+                  ])
                 }
               >
                 <PlusIcon className="size-4" />
@@ -474,7 +522,9 @@ export default function ProductDetailPage() {
               </Button>
               <Button
                 variant="secondary"
-                disabled={isNew || generate.isPending}
+                // Nothing to generate until every attribute has a name and at
+                // least one value.
+                disabled={isNew || !attributesReady || generate.isPending}
                 onClick={async () => {
                   await saveGeneral.mutateAsync()
                   generate.mutate()
@@ -483,6 +533,11 @@ export default function ProductDetailPage() {
                 <WandSparklesIcon className="size-4" />
                 Generate variants
               </Button>
+              {!attributesReady && (
+                <span className="text-xs text-muted-foreground">
+                  Give every attribute a name and at least one value.
+                </span>
+              )}
             </div>
           </CardContent>
         </Card>
@@ -495,25 +550,36 @@ export default function ProductDetailPage() {
               {hasVariants ? "Variants, stock and pricing" : "Pricing and stock"}
             </CardTitle>
             <CardDescription>
-              Enter one currency per tier. The others fill in at the configured rate.
+              Enter the unit cost and the unit price in{" "}
+              {baseCurrency?.code ?? "the base currency"}. Every tier and currency price
+              is calculated from the price and that tier&apos;s discount — margin comes
+              from the cost.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  {hasVariants && <TableHead>Variant</TableHead>}
-                  <TableHead className="w-56">SKU</TableHead>
-                  <TableHead className="w-28">Unit cost</TableHead>
-                  {!isSubscription &&
+                  {hasVariants && <TableHead className="min-w-[12rem]">Variant</TableHead>}
+                  <TableHead className="min-w-[16rem]">SKU</TableHead>
+                  <TableHead className="min-w-[9rem]">
+                    Unit cost ({baseCurrency?.code})
+                  </TableHead>
+                  <TableHead className="min-w-[9rem]">
+                    Unit price ({baseCurrency?.code})
+                  </TableHead>
+                  {stocked &&
                     warehouses.map((warehouse) => (
-                      <TableHead key={warehouse.id} className="w-28">
+                      <TableHead key={warehouse.id} className="min-w-[7rem]">
                         {warehouse.name}
                       </TableHead>
                     ))}
                   {tiers.flatMap((tier) =>
                     currencies.map((currency) => (
-                      <TableHead key={`${tier.id}-${currency.code}`} className="w-32">
+                      <TableHead
+                        key={`${tier.id}-${currency.code}`}
+                        className="min-w-[8rem] text-right"
+                      >
                         {tier.name} {currency.code}
                       </TableHead>
                     ))
@@ -531,15 +597,9 @@ export default function ProductDetailPage() {
                       <TableCell>
                         <Input
                           value={row?.sku ?? variant.sku}
-                          className="h-8"
+                          className="h-8 font-mono text-xs"
                           onChange={(event) =>
-                            setMatrix((current) => ({
-                              ...current,
-                              [variant.id]: {
-                                ...current[variant.id],
-                                sku: event.target.value,
-                              },
-                            }))
+                            patchRow(variant.id, { sku: event.target.value })
                           }
                         />
                       </TableCell>
@@ -549,64 +609,151 @@ export default function ProductDetailPage() {
                           min="0"
                           step="0.01"
                           className="h-8"
-                          value={row?.unitCost ?? "0"}
+                          placeholder="required"
+                          aria-invalid={!row?.unitCost || Number(row.unitCost) <= 0}
+                          value={row?.unitCost ?? ""}
                           onChange={(event) =>
-                            setMatrix((current) => ({
-                              ...current,
-                              [variant.id]: {
-                                ...current[variant.id],
-                                unitCost: event.target.value,
-                              },
-                            }))
+                            patchRow(variant.id, { unitCost: event.target.value })
                           }
                         />
                       </TableCell>
-                      {!isSubscription &&
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          className="h-8"
+                          placeholder="required"
+                          aria-invalid={!row?.basePrice || Number(row.basePrice) <= 0}
+                          value={row?.basePrice ?? ""}
+                          onChange={(event) =>
+                            patchRow(variant.id, { basePrice: event.target.value })
+                          }
+                        />
+                      </TableCell>
+                      {stocked &&
                         warehouses.map((warehouse) => (
                           <TableCell key={warehouse.id}>
                             <Input
                               type="number"
                               min="0"
                               className="h-8"
-                              value={row?.quantity[warehouse.id] ?? "0"}
+                              placeholder="required"
+                              aria-invalid={
+                                (row?.quantity[warehouse.id] ?? "").trim() === ""
+                              }
+                              value={row?.quantity[warehouse.id] ?? ""}
                               onChange={(event) =>
-                                setQuantity(variant.id, warehouse.id, event.target.value)
+                                patchRow(variant.id, {
+                                  quantity: {
+                                    ...(row?.quantity ?? {}),
+                                    [warehouse.id]: event.target.value,
+                                  },
+                                })
                               }
                             />
                           </TableCell>
                         ))}
                       {tiers.flatMap((tier) =>
-                        currencies.map((currency) => (
-                          <TableCell key={`${tier.id}-${currency.code}`}>
-                            <Input
-                              type="number"
-                              min="0"
-                              step="0.01"
-                              className="h-8"
-                              value={row?.price[priceKey(tier.id, currency.code)] ?? ""}
-                              onChange={(event) =>
-                                setPrice(
-                                  variant.id,
-                                  tier.id,
-                                  currency.code,
-                                  event.target.value
-                                )
-                              }
-                            />
-                          </TableCell>
-                        ))
+                        currencies.map((currency) => {
+                          const value = cellPrice(row?.basePrice ?? "", tier, currency)
+                          return (
+                            <TableCell
+                              key={`${tier.id}-${currency.code}`}
+                              className="text-right tabular-nums text-muted-foreground"
+                            >
+                              {value == null ? "—" : value.toFixed(2)}
+                            </TableCell>
+                          )
+                        })
                       )}
                     </TableRow>
                   )
                 })}
               </TableBody>
             </Table>
-            <Button onClick={() => saveMatrix.mutate()} disabled={saveMatrix.isPending}>
-              Save prices and stock
-            </Button>
+            <div className="flex flex-wrap items-center gap-3">
+              <Button
+                onClick={() => saveMatrix.mutate()}
+                disabled={!matrixComplete || saveMatrix.isPending}
+              >
+                Save prices and stock
+              </Button>
+              {!matrixComplete && (
+                <span className="text-xs text-muted-foreground">
+                  Every SKU needs a unit cost, a unit price
+                  {stocked ? " and a quantity for each warehouse" : ""}.
+                </span>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
+    </div>
+  )
+}
+
+/** What a sales rep, manager or finance user sees: the same product, no inputs. */
+function ReadOnlyProduct({ product }: { product: Product | null }) {
+  if (!product) return null
+  return (
+    <div className="space-y-6">
+      <Button variant="ghost" size="sm" asChild>
+        <Link to="/app/products">
+          <ArrowLeftIcon className="size-4" />
+          Product catalog
+        </Link>
+      </Button>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">{product.name}</CardTitle>
+          <CardDescription>
+            {product.category} · {product.unit}
+            {product.recurring_interval ? ` / ${product.recurring_interval}` : ""} ·{" "}
+            {product.tax_percent}% tax
+          </CardDescription>
+        </CardHeader>
+        {product.description && (
+          <CardContent className="text-sm text-muted-foreground">
+            {product.description}
+          </CardContent>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Variants and prices</CardTitle>
+        </CardHeader>
+        <CardContent className="overflow-x-auto p-0">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="min-w-[12rem]">Variant</TableHead>
+                <TableHead className="min-w-[16rem]">SKU</TableHead>
+                <TableHead className="min-w-[10rem]">Available</TableHead>
+                <TableHead className="min-w-[16rem]">Prices</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {product.variants.map((variant) => (
+                <TableRow key={variant.id}>
+                  <TableCell className="font-medium">{variant.name}</TableCell>
+                  <TableCell className="font-mono text-xs">{variant.sku}</TableCell>
+                  <TableCell className="tabular-nums">
+                    {variant.stock.reduce((sum, item) => sum + item.quantity_available, 0)}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {variant.prices
+                      .map((price) => `${price.unit_price.toFixed(2)} ${price.currency_code}`)
+                      .join(" · ") || "—"}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   )
 }

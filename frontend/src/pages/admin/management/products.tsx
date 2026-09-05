@@ -1,8 +1,10 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { MoreHorizontalIcon, PlusIcon } from "lucide-react"
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { MoreHorizontalIcon, PlusIcon, SearchIcon } from "lucide-react"
+import { useEffect, useState } from "react"
 import { Link, useNavigate } from "react-router-dom"
 import { toast } from "sonner"
 
+import { SortableHeader } from "@/components/sortable-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -12,6 +14,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Input } from "@/components/ui/input"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Table,
   TableBody,
@@ -21,7 +31,15 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { api, errorMessage } from "@/lib/api"
-import type { CatalogStats, ProductListRow } from "@/types/api"
+import type {
+  CatalogStats,
+  Page,
+  ProductListRow,
+  ProductSort,
+  ProductStatus,
+} from "@/types/api"
+
+const PAGE_SIZE = 10
 
 function Kpi({ title, value, detail }: { title: string; value: string; detail: string }) {
   return (
@@ -52,26 +70,60 @@ function priceRange(row: ProductListRow) {
     : `${fmt(row.price_min)} – ${fmt(row.price_max)}`
 }
 
-export default function ProductsTab() {
+export default function ProductsTab({ readOnly = false }: { readOnly?: boolean }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
 
+  const [search, setSearch] = useState("")
+  const [debounced, setDebounced] = useState("")
+  const [statusFilter, setStatusFilter] = useState<ProductStatus | "all">("all")
+  const [sort, setSort] = useState<ProductSort>("name")
+  const [order, setOrder] = useState<"asc" | "desc">("asc")
+  const [page, setPage] = useState(1)
+
+  // The same 300 ms debounce the users screen uses, so typing does not fire a
+  // request per keystroke.
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(search.trim()), 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
+  // Any change to what is being filtered invalidates the current page number.
+  useEffect(() => {
+    setPage(1)
+  }, [debounced, statusFilter, sort, order])
+
   const statsQuery = useQuery({
-    queryKey: ["admin", "catalog-stats"],
-    queryFn: async () => (await api.get<CatalogStats>("/admin/catalog/stats")).data,
+    queryKey: ["catalog-stats"],
+    queryFn: async () => (await api.get<CatalogStats>("/catalog/stats")).data,
   })
   const productsQuery = useQuery({
-    queryKey: ["admin", "products"],
-    queryFn: async () => (await api.get<ProductListRow[]>("/admin/products")).data,
+    queryKey: ["products", { debounced, statusFilter, sort, order, page }],
+    queryFn: async () =>
+      (
+        await api.get<Page<ProductListRow>>("/products", {
+          params: {
+            page,
+            size: PAGE_SIZE,
+            sort,
+            order,
+            ...(debounced ? { search: debounced } : {}),
+            ...(statusFilter === "all" ? {} : { status: statusFilter }),
+          },
+        })
+      ).data,
+    placeholderData: keepPreviousData,
   })
 
   const stats = statsQuery.data
-  const products = productsQuery.data ?? []
+  const products = productsQuery.data?.items ?? []
+  const total = productsQuery.data?.total ?? 0
+  const pages = productsQuery.data?.pages ?? 0
 
   const refresh = async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["admin", "products"] }),
-      queryClient.invalidateQueries({ queryKey: ["admin", "catalog-stats"] }),
+      queryClient.invalidateQueries({ queryKey: ["products"] }),
+      queryClient.invalidateQueries({ queryKey: ["catalog-stats"] }),
     ])
   }
 
@@ -99,6 +151,15 @@ export default function ProductsTab() {
     onError: (caught) => toast.error(errorMessage(caught, "Could not delete the product.")),
   })
 
+  const onSort = (column: ProductSort) => {
+    if (column === sort) {
+      setOrder((current) => (current === "asc" ? "desc" : "asc"))
+      return
+    }
+    setSort(column)
+    setOrder("asc")
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -108,12 +169,14 @@ export default function ProductsTab() {
             Every product, variant and price list in one place.
           </p>
         </div>
-        <Button asChild>
-          <Link to="/app/admin/products/new">
-            <PlusIcon className="size-4" />
-            New Product
-          </Link>
-        </Button>
+        {!readOnly && (
+          <Button asChild>
+            <Link to="/app/admin/products/new">
+              <PlusIcon className="size-4" />
+              New Product
+            </Link>
+          </Button>
+        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
@@ -135,21 +198,93 @@ export default function ProductsTab() {
       </div>
 
       <Card>
-        <CardHeader>
+        <CardHeader className="gap-3">
           <CardTitle className="text-base">Products</CardTitle>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative max-w-sm flex-1">
+              <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Search name, category or SKU"
+                className="pl-8"
+              />
+            </div>
+            <Select
+              value={statusFilter}
+              onValueChange={(value) => setStatusFilter(value as ProductStatus | "all")}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All statuses</SelectItem>
+                <SelectItem value="active">Active</SelectItem>
+                <SelectItem value="archived">Archived</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Product name</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead className="w-24">Variants</TableHead>
-                <TableHead>Price range</TableHead>
-                <TableHead className="w-28">Unit</TableHead>
-                <TableHead className="w-20">Tax %</TableHead>
-                <TableHead className="w-28">Status</TableHead>
-                <TableHead className="w-16" />
+                <SortableHeader
+                  column="name"
+                  active={sort}
+                  direction={order}
+                  onSort={onSort}
+                  className="min-w-[14rem]"
+                >
+                  Product name
+                </SortableHeader>
+                <SortableHeader
+                  column="category"
+                  active={sort}
+                  direction={order}
+                  onSort={onSort}
+                  className="min-w-[9rem]"
+                >
+                  Category
+                </SortableHeader>
+                <SortableHeader
+                  column="variants"
+                  active={sort}
+                  direction={order}
+                  onSort={onSort}
+                  className="min-w-[7rem]"
+                >
+                  Variants
+                </SortableHeader>
+                <SortableHeader
+                  column="price"
+                  active={sort}
+                  direction={order}
+                  onSort={onSort}
+                  className="min-w-[13rem]"
+                >
+                  Price range
+                </SortableHeader>
+                <TableHead className="min-w-[8rem]">Unit</TableHead>
+                <SortableHeader
+                  column="tax"
+                  active={sort}
+                  direction={order}
+                  onSort={onSort}
+                  className="min-w-[6rem]"
+                >
+                  Tax %
+                </SortableHeader>
+                <SortableHeader
+                  column="status"
+                  active={sort}
+                  direction={order}
+                  onSort={onSort}
+                  className="min-w-[7rem]"
+                >
+                  Status
+                </SortableHeader>
+                {!readOnly && <TableHead className="w-16" />}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -157,19 +292,25 @@ export default function ProductsTab() {
                 <TableRow
                   key={product.id}
                   className="cursor-pointer"
-                  onClick={() => navigate(`/app/admin/products/${product.id}`)}
+                  onClick={() =>
+                    navigate(
+                      readOnly
+                        ? `/app/products/${product.id}`
+                        : `/app/admin/products/${product.id}`
+                    )
+                  }
                 >
                   <TableCell className="font-medium">{product.name}</TableCell>
                   <TableCell>{product.category}</TableCell>
                   <TableCell>
                     {product.has_variants ? product.variant_count : "—"}
                   </TableCell>
-                  <TableCell>{priceRange(product)}</TableCell>
+                  <TableCell className="tabular-nums">{priceRange(product)}</TableCell>
                   <TableCell className="capitalize">
                     {product.unit}
                     {product.recurring_interval ? ` / ${product.recurring_interval}` : ""}
                   </TableCell>
-                  <TableCell>{product.tax_percent}%</TableCell>
+                  <TableCell className="tabular-nums">{product.tax_percent}%</TableCell>
                   <TableCell>
                     <Badge
                       variant={product.status === "active" ? "secondary" : "outline"}
@@ -178,49 +319,51 @@ export default function ProductsTab() {
                       {product.status}
                     </Badge>
                   </TableCell>
-                  <TableCell onClick={(event) => event.stopPropagation()}>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" aria-label="Actions">
-                          <MoreHorizontalIcon className="size-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem asChild>
-                          <Link to={`/app/admin/products/${product.id}`}>Edit</Link>
-                        </DropdownMenuItem>
-                        {product.status === "active" ? (
-                          <DropdownMenuItem
-                            onClick={() =>
-                              setStatus.mutate({ id: product.id, action: "archive" })
-                            }
-                          >
-                            Archive
+                  {!readOnly && (
+                    <TableCell onClick={(event) => event.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" aria-label="Actions">
+                            <MoreHorizontalIcon className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem asChild>
+                            <Link to={`/app/admin/products/${product.id}`}>Edit</Link>
                           </DropdownMenuItem>
-                        ) : (
+                          {product.status === "active" ? (
+                            <DropdownMenuItem
+                              onClick={() =>
+                                setStatus.mutate({ id: product.id, action: "archive" })
+                              }
+                            >
+                              Archive
+                            </DropdownMenuItem>
+                          ) : (
+                            <DropdownMenuItem
+                              onClick={() =>
+                                setStatus.mutate({ id: product.id, action: "restore" })
+                              }
+                            >
+                              Restore
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
-                            onClick={() =>
-                              setStatus.mutate({ id: product.id, action: "restore" })
-                            }
+                            variant="destructive"
+                            onClick={() => remove.mutate(product.id)}
                           >
-                            Restore
+                            Delete
                           </DropdownMenuItem>
-                        )}
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => remove.mutate(product.id)}
-                        >
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
               {!products.length && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-sm text-muted-foreground">
-                    No products yet.
+                  <TableCell colSpan={readOnly ? 7 : 8} className="text-sm text-muted-foreground">
+                    {debounced ? "No products match that search." : "No products yet."}
                   </TableCell>
                 </TableRow>
               )}
@@ -228,6 +371,31 @@ export default function ProductsTab() {
           </Table>
         </CardContent>
       </Card>
+
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
+        <span>
+          {total} product{total === 1 ? "" : "s"}
+          {pages > 1 && ` · page ${page} of ${pages}`}
+        </span>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page <= 1}
+            onClick={() => setPage((current) => current - 1)}
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page >= pages}
+            onClick={() => setPage((current) => current + 1)}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
     </div>
   )
 }
