@@ -13,7 +13,12 @@ from app.services.user_service import (
     update_user,
     verify_user_email,
 )
-from app.services import pricing_service, variant_service
+from app.services import (
+    approval_service,
+    audit_service,
+    pricing_service,
+    variant_service,
+)
 from app.services.catalog_service import (
     InUseError,
     create_category_limit,
