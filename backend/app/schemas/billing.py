@@ -7,6 +7,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.billing import (
+    CreditNoteStatus,
     InvoiceKind,
     InvoiceLineType,
     InvoiceStatus,
@@ -192,3 +193,40 @@ class RecordPaymentInput(BaseModel):
     received_on: Optional[date] = None
     is_refund: bool = False
     note: Optional[str] = Field(default=None, max_length=255)
+
+
+# --------------------------------------------------------------------------- #
+# Credit notes
+# --------------------------------------------------------------------------- #
+
+class CreditNoteRead(BaseModel):
+    """Money owed back to a customer, and where it came from."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    number: str
+    customer_id: uuid.UUID
+    customer_name: str
+    amount: float
+    currency: str
+    reason: Optional[str] = None
+    status: CreditNoteStatus
+    issued_at: Optional[datetime] = None
+    # Where it came from, so Finance can see why the customer is in credit.
+    subscription_id: Optional[uuid.UUID] = None
+    plan_name: Optional[str] = None
+    # Where it went, once applied.
+    invoice_id: Optional[uuid.UUID] = None
+    invoice_number: Optional[str] = None
+
+
+class CreditNoteCounts(BaseModel):
+    issued: int = 0
+    applied: int = 0
+    cancelled: int = 0
+    outstanding_amount: float = 0
+
+
+class ApplyCreditNoteInput(BaseModel):
+    invoice_id: uuid.UUID

@@ -23,6 +23,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.cache import with_lock
 from app.models.analytics import AuditAction
 from app.models.billing import (
     CreditNote,
@@ -305,17 +306,29 @@ async def cancel(
 async def _credit_note(
     db: AsyncSession, *, subscription: Subscription, amount: Decimal, reason: str
 ) -> CreditNote:
-    count = (await db.execute(select(func.count()).select_from(CreditNote))).scalar_one()
-    note = CreditNote(
-        number=f"CN-{1000 + int(count) + 1}",
-        customer_id=subscription.customer_id,
-        subscription_id=subscription.id,
-        amount=float(amount),
-        currency=subscription.currency,
-        reason=reason,
-        status=CreditNoteStatus.ISSUED,
-    )
-    db.add(note)
+    """Records money owed back to the customer.
+
+    Numbered under a lock: COUNT(*) alone races two concurrent downgrades into
+    the same number and one of them dies on the unique index.
+    """
+    async with with_lock("credit-note-number", ttl=15):
+        count = (
+            await db.execute(select(func.count()).select_from(CreditNote))
+        ).scalar_one()
+        note = CreditNote(
+            number=f"CN-{1000 + int(count) + 1}",
+            customer_id=subscription.customer_id,
+            subscription_id=subscription.id,
+            amount=float(amount),
+            currency=subscription.currency,
+            reason=reason,
+            status=CreditNoteStatus.ISSUED,
+            # Set here rather than left null: a note created as ISSUED has, by
+            # definition, been issued.
+            issued_at=datetime.now(timezone.utc),
+        )
+        db.add(note)
+        await db.flush()
     return note
 
 

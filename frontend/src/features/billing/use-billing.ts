@@ -3,6 +3,8 @@ import { toast } from "sonner"
 
 import { api, errorMessage } from "@/lib/api"
 import type {
+  CreditNote,
+  CreditNoteCounts,
   Invoice,
   InvoiceCounts,
   InvoiceDetail,
@@ -202,5 +204,52 @@ export function useInvoiceOrder() {
     },
     onError: (caught) =>
       toast.error(errorMessage(caught, "Could not raise the invoice.")),
+  })
+}
+
+export function useCreditNotes() {
+  return useQuery({
+    queryKey: ["credit-notes"],
+    queryFn: async () => (await api.get<CreditNote[]>("/credit-notes")).data,
+    staleTime: 15_000,
+  })
+}
+
+export function useCreditNoteCounts() {
+  return useQuery({
+    queryKey: ["credit-notes", "counts"],
+    queryFn: async () =>
+      (await api.get<CreditNoteCounts>("/credit-notes/counts")).data,
+    staleTime: 15_000,
+  })
+}
+
+/** Settles part of an invoice with credit the customer is already owed. */
+export function useApplyCreditNote() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async ({
+      noteId,
+      invoiceId,
+    }: {
+      noteId: string
+      invoiceId: string
+    }) =>
+      (
+        await api.post<CreditNote>(`/credit-notes/${noteId}/apply`, {
+          invoice_id: invoiceId,
+        })
+      ).data,
+    onSuccess: (note) => {
+      queryClient.invalidateQueries({ queryKey: ["credit-notes"] })
+      // The invoice's balance moved too.
+      queryClient.invalidateQueries({ queryKey: ["invoices"] })
+      if (note.invoice_id) {
+        queryClient.invalidateQueries({ queryKey: ["invoice", note.invoice_id] })
+      }
+      toast.success(`${note.number} applied to ${note.invoice_number}.`)
+    },
+    onError: (caught) =>
+      toast.error(errorMessage(caught, "Could not apply that credit note.")),
   })
 }

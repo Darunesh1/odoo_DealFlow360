@@ -6,7 +6,7 @@ been invoiced yet?" without asking anyone.
 """
 
 from datetime import date
-from typing import Any, Optional
+from typing import Any, List, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -15,6 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination, get_current_user, get_db, get_pagination, require_roles
 from app.models.billing import (
+    CreditNote,
+    CreditNoteStatus,
     Invoice,
     InvoiceLine,
     InvoiceLineType,
@@ -27,7 +29,10 @@ from app.models.fulfillment import Fulfillment, FulfillmentStatus
 from app.models.quotation import Quotation, QuotationStatus
 from app.models.user import Role, User
 from app.schemas.billing import (
+    ApplyCreditNoteInput,
     CancelInput,
+    CreditNoteCounts,
+    CreditNoteRead,
     InvoiceCounts,
     InvoiceDetail,
     InvoiceLineRead,
@@ -473,3 +478,96 @@ async def record_payment(
         raise _bad(str(exc))
     await db.commit()
     return await read_invoice(invoice_id, db=db)
+
+
+# --------------------------------------------------------------------------- #
+# Credit notes
+# --------------------------------------------------------------------------- #
+
+async def _credit_note_row(db: AsyncSession, note: CreditNote) -> CreditNoteRead:
+    customer = await db.get(Customer, note.customer_id)
+    subscription = (
+        await db.get(Subscription, note.subscription_id)
+        if note.subscription_id
+        else None
+    )
+    invoice = await db.get(Invoice, note.invoice_id) if note.invoice_id else None
+    return CreditNoteRead(
+        id=note.id,
+        number=note.number,
+        customer_id=note.customer_id,
+        customer_name=customer.name if customer else "—",
+        amount=float(note.amount),
+        currency=note.currency,
+        reason=note.reason,
+        status=note.status,
+        issued_at=note.issued_at,
+        subscription_id=note.subscription_id,
+        plan_name=subscription.plan_name if subscription else None,
+        invoice_id=note.invoice_id,
+        invoice_number=invoice.number if invoice else None,
+    )
+
+
+@router.get("/credit-notes", response_model=List[CreditNoteRead])
+async def read_credit_notes(
+    db: AsyncSession = Depends(get_db),
+    status_filter: Optional[CreditNoteStatus] = Query(default=None, alias="status"),
+) -> Any:
+    """What the business owes back, and why.
+
+    Written by downgrades and mid-cycle cancellations. Until now they were
+    created and never shown anywhere, so Finance could not reconcile them.
+    """
+    stmt = select(CreditNote).order_by(CreditNote.created_at.desc())
+    if status_filter is not None:
+        stmt = stmt.where(CreditNote.status == status_filter)
+    notes = (await db.execute(stmt)).scalars().all()
+    return [await _credit_note_row(db, note) for note in notes]
+
+
+@router.get("/credit-notes/counts", response_model=CreditNoteCounts)
+async def read_credit_note_counts(db: AsyncSession = Depends(get_db)) -> Any:
+    rows = (
+        await db.execute(
+            select(CreditNote.status, func.count(), func.coalesce(func.sum(CreditNote.amount), 0))
+            .group_by(CreditNote.status)
+        )
+    ).all()
+    counts = {status_: (int(n), float(total)) for status_, n, total in rows}
+    return CreditNoteCounts(
+        issued=counts.get(CreditNoteStatus.ISSUED, (0, 0))[0],
+        applied=counts.get(CreditNoteStatus.APPLIED, (0, 0))[0],
+        cancelled=counts.get(CreditNoteStatus.CANCELLED, (0, 0))[0],
+        # Only unapplied notes are money still owed.
+        outstanding_amount=round(counts.get(CreditNoteStatus.ISSUED, (0, 0))[1], 2),
+    )
+
+
+@router.post(
+    "/credit-notes/{note_id}/apply",
+    response_model=CreditNoteRead,
+    dependencies=[Depends(require_finance)],
+)
+async def apply_credit_note(
+    note_id: uuid.UUID,
+    body: ApplyCreditNoteInput,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Settles part of an invoice with credit the customer is already owed."""
+    note = await db.get(CreditNote, note_id)
+    if note is None:
+        raise _missing("Credit note")
+    invoice = await db.get(Invoice, body.invoice_id)
+    if invoice is None:
+        raise _missing("Invoice")
+
+    try:
+        await payment_service.apply_credit_note(
+            db, note=note, invoice=invoice, user=current_user
+        )
+    except ValueError as exc:
+        raise _bad(str(exc))
+    await db.commit()
+    return await _credit_note_row(db, note)

@@ -637,7 +637,9 @@ export const PAYMENT_METHODS = [
   "card",
   "cheque",
   "cash",
-  "credit_note",
+  // Matches the backend enum value. It was "credit_note" here, which the API
+  // would have rejected had anyone ever picked it.
+  "credit_applied",
   "other",
 ] as const
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
@@ -647,7 +649,7 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   card: "Card",
   cheque: "Cheque",
   cash: "Cash",
-  credit_note: "Credit note",
+  credit_applied: "Credit note",
   other: "Other",
 }
 
@@ -755,6 +757,37 @@ export interface Invoice {
   total: number
   amount_paid: number
   paid_at: string | null
+}
+
+export const CREDIT_NOTE_STATUSES = [
+  "draft",
+  "issued",
+  "applied",
+  "cancelled",
+] as const
+export type CreditNoteStatus = (typeof CREDIT_NOTE_STATUSES)[number]
+
+export interface CreditNote {
+  id: string
+  number: string
+  customer_id: string
+  customer_name: string
+  amount: number
+  currency: string
+  reason: string | null
+  status: CreditNoteStatus
+  issued_at: string | null
+  subscription_id: string | null
+  plan_name: string | null
+  invoice_id: string | null
+  invoice_number: string | null
+}
+
+export interface CreditNoteCounts {
+  issued: number
+  applied: number
+  cancelled: number
+  outstanding_amount: number
 }
 
 export interface InvoiceCounts {

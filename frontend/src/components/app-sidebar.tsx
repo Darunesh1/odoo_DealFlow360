@@ -7,6 +7,7 @@ import {
   TruckIcon,
   RepeatIcon,
   ReceiptIcon,
+  FileMinusIcon,
   TriangleAlertIcon,
   ChartColumnIcon,
   ShieldCheckIcon,
@@ -59,6 +60,7 @@ const GOVERNANCE: NavItem[] = [
 const BILLING: NavItem[] = [
   { title: "Subscriptions", url: "/app/subscriptions", icon: RepeatIcon, nested: true },
   { title: "Invoices", url: "/app/invoices", icon: ReceiptIcon, nested: true },
+  { title: "Credit Notes", url: "/app/credit-notes", icon: FileMinusIcon, nested: true },
 ]
 
 const INSIGHT: NavItem[] = [

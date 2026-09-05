@@ -177,3 +177,69 @@ async def test_an_overpayment_is_refused(db_session):
         await payment_service.record_payment(
             db_session, invoice=invoice, amount=float(invoice.total) + 1
         )
+
+
+async def test_a_credit_note_settles_part_of_an_invoice(db_session):
+    """Applying a credit reduces what is outstanding by exactly its amount."""
+    from datetime import date, timedelta
+
+    from sqlalchemy import select
+
+    from app.models.billing import (
+        CreditNote,
+        CreditNoteStatus,
+        PaymentMethod,
+        Subscription,
+    )
+    from app.models.catalog import RecurringInterval
+    from app.services import payment_service
+
+    quotation, _ = await _shipped_order(db_session)
+    invoice = await invoice_service.invoice_shipped(db_session, quotation=quotation)
+
+    start = date.today()
+    subscription = Subscription(
+        customer_id=quotation.customer_id,
+        quotation_id=quotation.id,
+        quotation_line_id=quotation.lines[0].id,
+        product_id=quotation.lines[0].product_id,
+        plan_name="Care Plan",
+        interval=RecurringInterval.MONTHLY,
+        quantity=8,
+        unit_price=40,
+        currency="USD",
+        status=SubscriptionStatus.ACTIVE,
+        start_date=start,
+        current_period_start=start,
+        current_period_end=start + timedelta(days=30),
+        next_billing_date=start,
+    )
+    db_session.add(subscription)
+    await db_session.commit()
+
+    # A downgrade is what raises the note.
+    await subscription_service.change_quantity(
+        db_session, subscription=subscription, new_quantity=4, effective=start
+    )
+    await db_session.commit()
+
+    note = (await db_session.execute(select(CreditNote))).scalars().first()
+    assert note is not None
+    assert note.issued_at is not None
+
+    before = float(invoice.amount_paid)
+    await payment_service.apply_credit_note(db_session, note=note, invoice=invoice)
+    await db_session.commit()
+
+    assert float(invoice.amount_paid) == pytest.approx(before + float(note.amount))
+    assert note.status == CreditNoteStatus.APPLIED
+    assert note.invoice_id == invoice.id
+
+    payments = await payment_service.payments_for(db_session, invoice.id)
+    assert payments[-1].method == PaymentMethod.CREDIT_APPLIED
+    assert payments[-1].credit_note_id == note.id
+
+    with pytest.raises(ValueError, match="already been applied"):
+        await payment_service.apply_credit_note(
+            db_session, note=note, invoice=invoice
+        )

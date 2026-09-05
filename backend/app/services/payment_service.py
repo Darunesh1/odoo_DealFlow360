@@ -116,3 +116,60 @@ async def _resettle(db: AsyncSession, invoice: Invoice) -> None:
         invoice.paid_at = None
 
     db.add(invoice)
+
+
+async def apply_credit_note(
+    db: AsyncSession,
+    *,
+    note,
+    invoice: Invoice,
+    user: Optional[User] = None,
+) -> Payment:
+    """Settles part of an invoice with a credit the customer is already owed.
+
+    Recorded as a payment with `method=CREDIT_APPLIED`, so the invoice's balance
+    and status move through `_resettle` - the same path a bank transfer takes.
+    A second mechanism for "money that reduces what is owed" would be a second
+    place for the arithmetic to disagree.
+    """
+    from app.models.billing import CreditNoteStatus
+
+    if note.status == CreditNoteStatus.APPLIED:
+        raise ValueError(f"{note.number} has already been applied")
+    if note.status == CreditNoteStatus.CANCELLED:
+        raise ValueError(f"{note.number} was cancelled")
+    if note.customer_id != invoice.customer_id:
+        raise ValueError("That credit note belongs to a different customer")
+    if note.currency != invoice.currency:
+        raise ValueError(
+            f"{note.number} is in {note.currency}; that invoice is in {invoice.currency}"
+        )
+
+    outstanding = Decimal(str(invoice.total)) - Decimal(str(invoice.amount_paid))
+    if outstanding <= 0:
+        raise ValueError("That invoice has nothing outstanding")
+
+    amount = Decimal(str(note.amount))
+    if amount > outstanding:
+        # Partial application would leave a remainder to track on the note, and
+        # the note has no field for it. Refuse rather than silently lose money.
+        raise ValueError(
+            f"{note.number} is {amount:.2f} but only {outstanding:.2f} is outstanding"
+        )
+
+    payment = await record_payment(
+        db,
+        invoice=invoice,
+        amount=float(amount),
+        method=PaymentMethod.CREDIT_APPLIED,
+        reference=note.number,
+        note=f"Credit note {note.number} applied",
+        user=user,
+    )
+    payment.credit_note_id = note.id
+    db.add(payment)
+
+    note.status = CreditNoteStatus.APPLIED
+    note.invoice_id = invoice.id
+    db.add(note)
+    return payment

@@ -38,6 +38,7 @@ const SubscriptionsPage = lazy(() => import("@/pages/app/subscriptions"));
 const BillingDetailPage = lazy(() => import("@/pages/app/billing-detail"));
 const InvoicesPage = lazy(() => import("@/pages/app/invoices"));
 const InvoiceDetailPage = lazy(() => import("@/pages/app/invoice-detail"));
+const CreditNotesPage = lazy(() => import("@/pages/app/credit-notes"));
 const PortalQuotationsPage = lazy(() => import("@/pages/portal/quotations"));
 const PortalQuotationDetailPage = lazy(
   () => import("@/pages/portal/quotation-detail")
@@ -215,6 +216,16 @@ export default function App() {
                     roles={["admin", "finance", "sales_manager", "sales_rep"]}
                   >
                     <BillingDetailPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="credit-notes"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <CreditNotesPage />
                   </RequireRole>
                 }
               />
