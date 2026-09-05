@@ -33,6 +33,10 @@ const FulfillmentPage = lazy(() => import("@/pages/app/fulfillment"));
 const FulfillmentDetailPage = lazy(
   () => import("@/pages/app/fulfillment-detail")
 );
+const SubscriptionsPage = lazy(() => import("@/pages/app/subscriptions"));
+const BillingDetailPage = lazy(() => import("@/pages/app/billing-detail"));
+const InvoicesPage = lazy(() => import("@/pages/app/invoices"));
+const InvoiceDetailPage = lazy(() => import("@/pages/app/invoice-detail"));
 const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
 const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
 const AdminProductDetailPage = lazy(
@@ -181,6 +185,48 @@ export default function App() {
                     roles={["admin", "finance", "sales_manager", "sales_rep"]}
                   >
                     <FulfillmentDetailPage />
+                  </RequireRole>
+                }
+              />
+              {/* Billing: Finance writes, sales roles read so a rep can answer
+                  "has my customer been invoiced yet?" without asking. */}
+              <Route
+                path="subscriptions"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <SubscriptionsPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="subscriptions/:subscriptionId"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <BillingDetailPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="invoices"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <InvoicesPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="invoices/:invoiceId"
+                element={
+                  <RequireRole
+                    roles={["admin", "finance", "sales_manager", "sales_rep"]}
+                  >
+                    <InvoiceDetailPage />
                   </RequireRole>
                 }
               />

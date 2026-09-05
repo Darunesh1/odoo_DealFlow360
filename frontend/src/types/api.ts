@@ -408,6 +408,174 @@ export interface Quotation {
   approval: Approval | null
 }
 
+export const SUBSCRIPTION_STATUSES = [
+  "active",
+  "paused",
+  "cancelled",
+  "expired",
+] as const
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number]
+
+export const INVOICE_STATUSES = [
+  "draft",
+  "unpaid",
+  "partially_paid",
+  "paid",
+  "void",
+] as const
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number]
+
+export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
+  draft: "Draft",
+  unpaid: "Unpaid",
+  partially_paid: "Partially Paid",
+  paid: "Paid",
+  void: "Void",
+}
+
+export const PAYMENT_METHODS = [
+  "bank_transfer",
+  "card",
+  "cheque",
+  "cash",
+  "credit_note",
+  "other",
+] as const
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number]
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  bank_transfer: "Bank transfer",
+  card: "Card",
+  cheque: "Cheque",
+  cash: "Cash",
+  credit_note: "Credit note",
+  other: "Other",
+}
+
+export interface Subscription {
+  id: string
+  customer_id: string
+  customer_name: string
+  quotation_id: string
+  quotation_number: string
+  plan_name: string
+  interval: RecurringInterval
+  quantity: number
+  unit_price: number
+  currency: string
+  status: SubscriptionStatus
+  start_date: string
+  current_period_start: string
+  current_period_end: string
+  next_billing_date: string | null
+  cancel_at_period_end: boolean
+}
+
+export interface SubscriptionCounts {
+  active: number
+  paused: number
+  cancelled: number
+  expired: number
+}
+
+export interface SubscriptionEvent {
+  id: string
+  event_type: string
+  effective_date: string
+  previous_quantity: number | null
+  new_quantity: number | null
+  period_start: string | null
+  period_end: string | null
+  days_in_period: number | null
+  days_remaining: number | null
+  proration_factor: number | null
+  proration_amount: number | null
+  reason: string | null
+  created_at: string
+}
+
+export interface OneTimeLine {
+  id: string
+  description: string
+  quantity: number
+  unit_price: number
+  amount: number
+}
+
+export interface UpcomingBill {
+  period_start: string
+  period_end: string
+  amount: number
+}
+
+export interface SubscriptionDetail extends Subscription {
+  one_time_lines: OneTimeLine[]
+  recurring_lines: Subscription[]
+  upcoming: UpcomingBill[]
+  events: SubscriptionEvent[]
+}
+
+export interface InvoiceLine {
+  id: string
+  line_type: string
+  description: string
+  quantity: number
+  unit_price: number
+  tax_percent: number
+  tax_amount: number
+  line_subtotal: number
+  line_total: number
+  service_period_start: string | null
+  service_period_end: string | null
+}
+
+export interface PaymentRecord {
+  id: string
+  amount: number
+  is_refund: boolean
+  method: PaymentMethod
+  reference: string | null
+  received_at: string
+  note: string | null
+}
+
+export interface Invoice {
+  id: string
+  number: string
+  customer_id: string
+  customer_name: string
+  quotation_id: string | null
+  quotation_number: string | null
+  kind: "one_time" | "recurring" | "credit"
+  status: InvoiceStatus
+  issue_date: string
+  due_date: string
+  currency: string
+  subtotal: number
+  tax_total: number
+  total: number
+  amount_paid: number
+  paid_at: string | null
+}
+
+export interface InvoiceCounts {
+  unpaid: number
+  partially_paid: number
+  paid: number
+  draft: number
+  void: number
+}
+
+export interface InvoiceDetail extends Invoice {
+  lines: InvoiceLine[]
+  payments: PaymentRecord[]
+  order_confirmed: boolean
+  order_shipped: boolean
+  order_invoiced: boolean
+  order_paid: boolean
+  related: Invoice[]
+}
+
 export const FULFILLMENT_STATUSES = [
   "split_pending",
   "reserved",
