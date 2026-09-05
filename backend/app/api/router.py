@@ -1,6 +1,16 @@
 from fastapi import APIRouter
 
-from app.api.endpoints import admin, auth, catalog, health, lookups, quotations, users
+from app.api.endpoints import (
+    admin,
+    auth,
+    catalog,
+    health,
+    lookups,
+    products,
+    quotations,
+    users,
+    warehouses,
+)
 from app.core.config import settings
 
 # Application API. Unversioned: there is one frontend, shipped with this
@@ -10,6 +20,11 @@ api_router.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 api_router.include_router(users.router, prefix="/users", tags=["Users"])
 api_router.include_router(admin.router, prefix="/admin", tags=["Administration"])
 api_router.include_router(catalog.router, prefix="/admin", tags=["Catalog"])
+# Read-only catalog for every internal role, and warehouses for Finance too.
+# Split out of the admin router rather than duplicated, so there is one
+# implementation of each read and no chance of the two drifting.
+api_router.include_router(products.router, tags=["Products"])
+api_router.include_router(warehouses.router, prefix="/admin", tags=["Warehouses"])
 api_router.include_router(lookups.router, prefix="/lookups", tags=["Lookups"])
 api_router.include_router(quotations.router, tags=["Quotations"])
 

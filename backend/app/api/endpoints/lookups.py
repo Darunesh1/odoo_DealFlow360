@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_roles
-from app.api.endpoints.catalog import serialize_stock
+from app.api.endpoints.serializers import serialize_product, serialize_stock
 from app.models.user import Role
 from app.schemas.catalog import CurrencyRead, ProductRead, StockRead
 from app.schemas.customer import CustomerRead, CustomerTierRead
@@ -40,10 +40,9 @@ async def read_currencies(db: AsyncSession = Depends(get_db)) -> Any:
 
 @router.get("/products", response_model=List[ProductRead])
 async def read_products(db: AsyncSession = Depends(get_db)) -> Any:
-    from app.api.endpoints.catalog import _serialize_product
-
+    """Only active products: an archived one can never reach a quotation."""
     return [
-        await _serialize_product(db, product)
+        await serialize_product(db, product)
         for product in await list_active_products(db)
     ]
 
