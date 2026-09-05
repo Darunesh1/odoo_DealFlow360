@@ -477,6 +477,25 @@ confirmation, so a derived report would silently change, and a "top product" tha
 retroactively is worse than none. `came_from_upsell` is what makes "Top Upsold Product" answerable
 at all. Exports are built in memory (`export_service`) and streamed — no temp files.
 
+## Scale, and what it cost
+
+`make load-data` (`backend/scripts/generate_load_data.py`) fills the database with 300 products,
+300 customers and 150 quotations through the **ORM**, so every rule the app enforces shaped the
+data. Measured at that size, every list endpoint answers in under 150 ms cold.
+
+Two things had to change to get there, and both were the same mistake:
+
+- **`GET /lookups/products` returned the full `ProductRead`** — every derived price and every
+  per-warehouse stock row for every variant. At 300 products that was 684 KB and ~500 queries,
+  and the picker reads none of it. It now returns `PickerProduct`: id, name, category and the
+  active variants, in two queries. 2,291 ms → 63 ms, 684 KB → 113 KB.
+- **The price matrix and the stock table painted every row** — ~2,900 and ~900 at that size. Both
+  now render a 250-row window with a "showing X of Y" line; the search is how you reach the rest.
+  The query was never the bottleneck, the browser was.
+
+The pattern worth remembering: a list endpoint should return what its screen renders. Reusing the
+detail schema for a picker is what made both of these slow.
+
 ## Who can see what
 
 `api/endpoints/catalog.py` holds writes behind a router-level `require_admin`. The read paths were

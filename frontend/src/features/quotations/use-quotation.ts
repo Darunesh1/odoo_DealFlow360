@@ -5,7 +5,7 @@ import { api, errorMessage } from "@/lib/api"
 import type {
   Currency,
   Customer,
-  Product,
+  PickerProduct,
   Quotation,
   QuotationCreateInput,
   QuotationLineCreateInput,
@@ -100,7 +100,7 @@ export function useQuotationLookups() {
   })
   const products = useQuery({
     queryKey: ["lookups", "products"],
-    queryFn: async () => (await api.get<Product[]>("/lookups/products")).data,
+    queryFn: async () => (await api.get<PickerProduct[]>("/lookups/products")).data,
     staleTime: 300_000,
   })
   const currencies = useQuery({

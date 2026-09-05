@@ -23,6 +23,9 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useTableSort } from "@/hooks/use-table-sort"
+
+/** How many stock rows to paint at once. */
+const STOCK_ROW_LIMIT = 250
 import { api, errorMessage } from "@/lib/api"
 import type { StockItem, Warehouse } from "@/types/api"
 
@@ -57,6 +60,9 @@ export default function WarehousesTab() {
     )
   }, [stock, stockSearch])
   const stockSort = useTableSort(filteredStock, "warehouse_name")
+  // One row per SKU per warehouse, so a real catalogue is thousands. Painted a
+  // window at a time; the search is how you reach the rest.
+  const visibleStock = stockSort.sorted.slice(0, STOCK_ROW_LIMIT)
 
   const refresh = async () => {
     await Promise.all([
@@ -305,7 +311,7 @@ export default function WarehousesTab() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {stockSort.sorted.map((item) => (
+              {visibleStock.map((item) => (
                 <TableRow key={item.id}>
                   <TableCell>{item.warehouse_name}</TableCell>
                   <TableCell>
@@ -320,6 +326,17 @@ export default function WarehousesTab() {
                   <TableCell className="tabular-nums">{item.quantity_available}</TableCell>
                 </TableRow>
               ))}
+              {stockSort.sorted.length > visibleStock.length && (
+                <TableRow>
+                  <TableCell
+                    colSpan={6}
+                    className="text-center text-sm text-muted-foreground"
+                  >
+                    Showing {visibleStock.length} of {stockSort.sorted.length} rows.
+                    Search to narrow it down.
+                  </TableCell>
+                </TableRow>
+              )}
               {!filteredStock.length && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-sm text-muted-foreground">

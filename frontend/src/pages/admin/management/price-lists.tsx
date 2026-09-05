@@ -23,6 +23,9 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { useTableSort } from "@/hooks/use-table-sort"
+
+/** How many rows to paint at once. The browser, not the query, is the limit. */
+const ROW_LIMIT = 250
 import { api, errorMessage } from "@/lib/api"
 import type { Currency, PriceMatrixRow } from "@/types/api"
 
@@ -57,6 +60,11 @@ export default function PriceListsTab() {
   }, [matrix, search])
 
   const sort = useTableSort(filtered, "product_name")
+  // Every price cell for every SKU is a few thousand rows at a real catalogue
+  // size, and the browser is the bottleneck, not the query. Rendering a
+  // window of them keeps the page responsive; the search narrows to what you
+  // are actually looking for.
+  const visible = sort.sorted.slice(0, ROW_LIMIT)
   const currencySort = useTableSort(currencies, "code")
 
   const refresh = async () => {
@@ -305,7 +313,7 @@ export default function PriceListsTab() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sort.sorted.map((row) => (
+              {visible.map((row) => (
                 <TableRow key={`${row.variant_id}-${row.tier_name}-${row.currency_code}`}>
                   <TableCell className="font-medium">{row.product_name}</TableCell>
                   <TableCell>{row.variant_name}</TableCell>
@@ -317,6 +325,17 @@ export default function PriceListsTab() {
                   </TableCell>
                 </TableRow>
               ))}
+              {sort.sorted.length > visible.length && (
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="text-center text-sm text-muted-foreground"
+                  >
+                    Showing {visible.length} of {sort.sorted.length} rows. Search
+                    to narrow it down.
+                  </TableCell>
+                </TableRow>
+              )}
               {!filtered.length && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-sm text-muted-foreground">

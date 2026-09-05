@@ -211,6 +211,30 @@ export interface Product {
 }
 
 /** One row of the product catalog table (screen 16). */
+/**
+ * A product as the quotation picker receives it.
+ *
+ * Deliberately narrower than `Product`: the picker endpoint does not send
+ * prices or stock, because it reads neither and shipping them cost most of a
+ * megabyte at three hundred products.
+ */
+export interface PickerVariant {
+  id: string
+  sku: string
+  name: string
+  is_active: boolean
+}
+
+export interface PickerProduct {
+  id: string
+  name: string
+  category: string
+  unit: ProductUnit
+  is_subscription: boolean
+  recurring_interval: RecurringInterval | null
+  variants: PickerVariant[]
+}
+
 export interface ProductListRow {
   id: string
   name: string

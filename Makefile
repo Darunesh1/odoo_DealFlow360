@@ -62,6 +62,9 @@ down: ## Stop the containers, keeping the data volumes
 logs: ## Tail the container logs
 	$(COMPOSE) logs -f
 
+load-data: up ## Fill the database with bulk demo data (300 products, 300 customers)
+	cd $(BACKEND) && uv run python scripts/generate_load_data.py $(ARGS)
+
 fresh: ## Destroy the data volumes and start again from empty
 	$(COMPOSE) down -v
 	@$(MAKE) --no-print-directory up

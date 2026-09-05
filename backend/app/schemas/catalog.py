@@ -192,6 +192,38 @@ class ProductRead(ProductBase):
     variants: List[ProductVariantRead] = Field(default_factory=list)
 
 
+class PickerVariant(BaseModel):
+    """A sellable option, as the quotation picker needs it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    sku: str
+    name: str
+    is_active: bool = True
+
+
+class PickerProduct(BaseModel):
+    """A product as the quotation picker needs it, and no more.
+
+    Deliberately not ProductRead. That carries every derived price and every
+    per-warehouse stock row for every variant - at three hundred products it is
+    most of a megabyte and several hundred queries, and the picker reads none
+    of it. Prices are resolved server-side when a line is added, and stock is
+    snapshotted onto the line at the same moment.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    category: str
+    unit: ProductUnit
+    is_subscription: bool
+    recurring_interval: Optional[RecurringInterval] = None
+    variants: List[PickerVariant] = Field(default_factory=list)
+
+
 class ProductSort(str, enum.Enum):
     NAME = "name"
     CATEGORY = "category"

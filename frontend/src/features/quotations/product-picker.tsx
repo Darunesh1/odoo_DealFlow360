@@ -25,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { cn } from "@/lib/utils"
-import type { Product, ProductVariant } from "@/types/api"
+import type { PickerProduct, PickerVariant } from "@/types/api"
 
 /**
  * Add-a-line, grouped by category as the spec's B3 describes ("Hardware,
@@ -39,7 +39,7 @@ export function ProductPicker({
   disabled,
   onAdd,
 }: {
-  products: Product[]
+  products: PickerProduct[]
   disabled: boolean
   onAdd: (input: { variantId: string; quantity: number; discount: number }) => void
 }) {
@@ -54,12 +54,12 @@ export function ProductPicker({
     () => (product?.variants ?? []).filter((variant) => variant.is_active),
     [product]
   )
-  const chosenVariant: ProductVariant | undefined =
+  const chosenVariant: PickerVariant | undefined =
     variants.find((variant) => variant.id === variantId) ??
     (variants.length === 1 ? variants[0] : undefined)
 
   const grouped = useMemo(() => {
-    const buckets = new Map<string, Product[]>()
+    const buckets = new Map<string, PickerProduct[]>()
     for (const item of products) {
       const list = buckets.get(item.category) ?? []
       list.push(item)

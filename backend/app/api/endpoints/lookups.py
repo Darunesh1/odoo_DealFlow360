@@ -8,14 +8,23 @@ from typing import Any, List, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_db, require_roles
 from app.api.endpoints.serializers import serialize_product, serialize_stock
 from app.core import cache
 from app.core.cache import cached_json
 from app.models.user import Role
-from app.schemas.catalog import CurrencyRead, ProductRead, StockRead
+from app.models.catalog import Product, ProductStatus
+from app.schemas.catalog import (
+    CurrencyRead,
+    PickerProduct,
+    PickerVariant,
+    ProductRead,
+    StockRead,
+)
 from app.schemas.customer import CustomerRead, CustomerTierRead
 from app.services import catalog_service, pricing_service
 from app.services.catalog_service import list_active_products, list_customers
@@ -58,22 +67,48 @@ async def read_currencies(db: AsyncSession = Depends(get_db)) -> Any:
     return await cached_json(cache.NS_CATALOG, "currencies", cache.TTL_CATALOG, load)
 
 
-@router.get("/products", response_model=List[ProductRead])
+@router.get("/products", response_model=List[PickerProduct])
 async def read_products(db: AsyncSession = Depends(get_db)) -> Any:
     """Only active products: an archived one can never reach a quotation.
 
-    The heaviest read in the app - every product with every variant, price and
-    stock row - and the one the product picker opens with.
+    Two queries, and only the fields the picker renders. It used to return the
+    full ProductRead - every derived price and every per-warehouse stock row -
+    which at three hundred products was 684 KB and roughly five hundred
+    queries, none of which the picker reads. Prices are resolved server-side
+    when a line is added, and stock is snapshotted onto the line then too.
     """
 
     async def load() -> list[dict]:
+        result = await db.execute(
+            select(Product)
+            .options(selectinload(Product.variants))
+            .where(Product.status == ProductStatus.ACTIVE)
+            .order_by(Product.name)
+        )
         return [
-            ProductRead.model_validate(await serialize_product(db, product)).model_dump()
-            for product in await list_active_products(db)
+            PickerProduct(
+                id=product.id,
+                name=product.name,
+                category=product.category,
+                unit=product.unit,
+                is_subscription=product.is_subscription,
+                recurring_interval=product.recurring_interval,
+                variants=[
+                    PickerVariant(
+                        id=variant.id,
+                        sku=variant.sku,
+                        name=variant.name,
+                        is_active=variant.is_active,
+                    )
+                    for variant in product.variants
+                    if variant.is_active
+                ],
+            ).model_dump()
+            for product in result.scalars().unique().all()
         ]
 
     return await cached_json(
-        cache.NS_CATALOG, "active-products", cache.TTL_CATALOG, load
+        cache.NS_CATALOG, "picker-products", cache.TTL_CATALOG, load
     )
 
 
