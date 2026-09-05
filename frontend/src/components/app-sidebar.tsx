@@ -1,10 +1,18 @@
 import {
   BookOpenIcon,
   LayoutDashboardIcon,
-  SettingsIcon,
+  LayoutGridIcon,
+  FileTextIcon,
+  GavelIcon,
+  TruckIcon,
+  RepeatIcon,
+  ReceiptIcon,
+  TriangleAlertIcon,
+  ChartColumnIcon,
   ShieldCheckIcon,
-  UserRoundIcon,
+  PackageIcon,
   UsersIcon,
+  WarehouseIcon,
 } from "lucide-react"
 import type { ComponentType } from "react"
 import { Link, useLocation } from "react-router-dom"
@@ -31,26 +39,71 @@ interface NavItem {
   title: string
   url: string
   icon: ComponentType<{ className?: string }>
+  excludes?: string[]
   /** Match nested routes too, rather than only the exact path. */
   nested?: boolean
 }
 
 const PLATFORM: NavItem[] = [
   { title: "Dashboard", url: "/app", icon: LayoutDashboardIcon },
-  { title: "Profile", url: "/app/profile", icon: UserRoundIcon },
-  { title: "Settings", url: "/app/settings", icon: SettingsIcon },
+  { title: "Quotations", url: "/app/quotations", icon: FileTextIcon, nested: true },
+  { title: "Pipeline", url: "/app/pipeline", icon: LayoutGridIcon, nested: true },
+]
+
+// Every internal role sees approvals; only the waiting step's role can decide.
+const GOVERNANCE: NavItem[] = [
+  { title: "Approvals", url: "/app/approvals", icon: GavelIcon, nested: true },
+  { title: "Fulfillment", url: "/app/fulfillment", icon: TruckIcon, nested: true },
+]
+
+const BILLING: NavItem[] = [
+  { title: "Subscriptions", url: "/app/subscriptions", icon: RepeatIcon, nested: true },
+  { title: "Invoices", url: "/app/invoices", icon: ReceiptIcon, nested: true },
+]
+
+const INSIGHT: NavItem[] = [
+  { title: "Deal Health", url: "/app/deal-health", icon: TriangleAlertIcon, nested: true },
+  { title: "Reports", url: "/app/reports", icon: ChartColumnIcon, nested: true },
+]
+
+// Shown to the roles that are NOT admins: an admin reaches the same screens
+// through Admin Management, and two identical rows in one sidebar is noise.
+const CATALOG: NavItem[] = [
+  { title: "Products", url: "/app/products", icon: PackageIcon, nested: true },
+]
+
+const OPERATIONS: NavItem[] = [
+  { title: "Warehouses", url: "/app/warehouses", icon: WarehouseIcon, nested: true },
 ]
 
 const ADMINISTRATION: NavItem[] = [
+  {
+    title: "Admin Management",
+    url: "/app/admin",
+    icon: PackageIcon,
+    nested: true,
+    // Users lives under /app/admin too, but is its own entry: without this
+    // both rows would highlight at once.
+    excludes: ["/app/admin/users"],
+  },
   { title: "Users", url: "/app/admin/users", icon: UsersIcon, nested: true },
 ]
 
 export function AppSidebar() {
-  const { isAdmin } = useAuth()
+  const { isAdmin, hasRole } = useAuth()
   const { pathname } = useLocation()
+  const canSeeSales = hasRole("admin", "sales_rep", "sales_manager")
+  const canSeeApprovals = hasRole("admin", "sales_rep", "sales_manager", "finance")
+  // Catalog and warehouse entries are for non-admins only: an admin gets the
+  // same screens as tabs inside Admin Management.
+  const canSeeCatalog = !isAdmin && hasRole("sales_rep", "sales_manager", "finance")
+  const canManageWarehouses = !isAdmin && hasRole("finance")
 
   const isActive = (item: NavItem) =>
-    item.nested ? pathname.startsWith(item.url) : pathname === item.url
+    item.nested
+      ? pathname.startsWith(item.url) &&
+        !(item.excludes ?? []).some((path) => pathname.startsWith(path))
+      : pathname === item.url
 
   const renderGroup = (label: string, items: NavItem[]) => (
     <SidebarGroup>
@@ -79,7 +132,12 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
-        {renderGroup("Platform", PLATFORM)}
+        {canSeeSales && renderGroup("Sales Operations", PLATFORM)}
+        {canSeeApprovals && renderGroup("Governance", GOVERNANCE)}
+        {canSeeApprovals && renderGroup("Billing", BILLING)}
+        {canSeeApprovals && renderGroup("Insight", INSIGHT)}
+        {canSeeCatalog && renderGroup("Catalog", CATALOG)}
+        {canManageWarehouses && renderGroup("Operations", OPERATIONS)}
         {isAdmin && renderGroup("Administration", ADMINISTRATION)}
 
         <SidebarGroup className="mt-auto">

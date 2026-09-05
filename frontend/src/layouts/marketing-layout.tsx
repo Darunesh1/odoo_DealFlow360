@@ -12,13 +12,13 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet"
-import { APP_NAME } from "@/config"
+import { APP_NAME, APP_TAGLINE } from "@/config"
 import { useAuth } from "@/features/auth/use-auth"
 
 const NAV = [
-  { label: "Features", href: "/#features" },
-  { label: "Stack", href: "/#stack" },
-  { label: "Pricing", href: "/#pricing" },
+  { label: "Modules", href: "/#modules" },
+  { label: "Governance", href: "/#governance" },
+  { label: "Roles", href: "/#roles" },
   { label: "FAQ", href: "/#faq" },
 ]
 
@@ -26,8 +26,9 @@ const FOOTER_COLUMNS = [
   {
     title: "Product",
     links: [
-      { label: "Features", href: "/#features" },
-      { label: "Pricing", href: "/#pricing" },
+      { label: "Modules", href: "/#modules" },
+      { label: "Governance", href: "/#governance" },
+      { label: "Roles", href: "/#roles" },
       { label: "FAQ", href: "/#faq" },
     ],
   },
@@ -35,19 +36,21 @@ const FOOTER_COLUMNS = [
     title: "Account",
     links: [
       { label: "Sign in", href: "/login" },
-      { label: "Sign in", href: "/login" },
+      // Public sign-up is for customers; staff accounts are created by an admin.
+      { label: "Create a customer account", href: "/signup" },
       { label: "Reset password", href: "/forgot-password" },
     ],
   },
 ]
 
 function AuthActions({ onNavigate }: { onNavigate?: () => void }) {
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, landingPath } = useAuth()
 
   if (isAuthenticated) {
     return (
       <Button asChild size="sm" onClick={onNavigate}>
-        <Link to="/app">Open the app</Link>
+        {/* A customer belongs in the portal, everyone else in the workspace. */}
+        <Link to={landingPath}>Open the workspace</Link>
       </Button>
     )
   }
@@ -58,7 +61,7 @@ function AuthActions({ onNavigate }: { onNavigate?: () => void }) {
         <Link to="/login">Sign in</Link>
       </Button>
       <Button asChild size="sm" onClick={onNavigate}>
-        <Link to="/login">Sign in</Link>
+        <Link to="/signup">Create an account</Link>
       </Button>
     </>
   )
@@ -133,9 +136,10 @@ export function MarketingLayout() {
         <div className="mx-auto grid w-full max-w-6xl gap-10 px-4 py-12 sm:px-6 md:grid-cols-[1.5fr_1fr_1fr]">
           <div className="space-y-3">
             <Brand />
+            <p className="text-sm font-medium">{APP_TAGLINE}</p>
             <p className="max-w-xs text-sm text-muted-foreground">
-              A production-shaped starting point: authentication, background jobs, and an
-              admin area, wired up on day zero.
+              Discount approvals that route themselves, multi-warehouse fulfillment,
+              hybrid billing, and a portal customers can negotiate in.
             </p>
           </div>
 
@@ -164,7 +168,7 @@ export function MarketingLayout() {
               © {new Date().getFullYear()} {APP_NAME}
             </p>
             <p className="label-mono text-muted-foreground">
-              FastAPI · React · PostgreSQL
+              Quotation · Approval · Fulfillment · Billing
             </p>
           </div>
         </div>

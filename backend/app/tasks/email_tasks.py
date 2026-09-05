@@ -46,16 +46,7 @@ def render_email(
 
 def send_email(recipient: str, subject: str, html_content: str) -> str:
     """Helper method to send an HTML email using SMTP or log it if SMTP configuration is missing."""
-    smtp_configured = all(
-        [
-            settings.SMTP_HOST,
-            settings.SMTP_PORT,
-            settings.SMTP_USER,
-            settings.SMTP_PASSWORD,
-        ]
-    )
-
-    if not smtp_configured:
+    if not settings.smtp_configured:
         logger.info("=== [MOCK EMAIL DISPATCHED] ===")
         logger.info(f"Recipient: {recipient}")
         logger.info(f"Subject:   {subject}")
@@ -71,10 +62,15 @@ def send_email(recipient: str, subject: str, html_content: str) -> str:
     msg["To"] = recipient
     msg.attach(MIMEText(html_content, "html"))
 
+    # Implicit TLS (port 465) opens the socket already encrypted, so it uses a
+    # different class and must not then call starttls(). Submission ports (587)
+    # take the plaintext connection and upgrade it.
+    connect = smtplib.SMTP_SSL if settings.SMTP_SSL else smtplib.SMTP
+
     try:
-        # Connect, secure via TLS, login and send
-        with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT) as server:  # type: ignore
-            server.starttls()
+        with connect(settings.SMTP_HOST, settings.SMTP_PORT) as server:  # type: ignore
+            if settings.SMTP_TLS and not settings.SMTP_SSL:
+                server.starttls()
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)  # type: ignore
             server.sendmail(
                 settings.EMAILS_FROM_EMAIL, recipient, msg.as_string()  # type: ignore
@@ -159,3 +155,242 @@ def send_password_reset_email(email: str, token: str, full_name: str = "") -> st
         button_url=link,
     )
     return send_email(email, "Reset your password", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_customer_portal_email")
+def send_customer_portal_email(
+    email: str,
+    customer_name: str = "",
+    quotation_number: str = "",
+    needs_invite: bool = False,
+    token: Optional[str] = None,
+) -> str:
+    """Sends a customer-facing quotation access email."""
+    if needs_invite and token:
+        link = f"{settings.FRONTEND_URL}/accept-invite?token={token}"
+        heading = f"Quotation {quotation_number} is ready"
+        body = (
+            f"<p>Hi {customer_name or 'there'},</p>"
+            "<p>Your quotation is ready. Create an account to view it in the portal.</p>"
+            f"<p style='font-size: 13px; color: #666;'>If you already have access, you can still use this link to finish setup. "
+            "If you were not expecting this email, you can ignore it.</p>"
+        )
+        button_label = "Create account"
+    else:
+        link = f"{settings.FRONTEND_URL}/login"
+        heading = f"Quotation {quotation_number} is ready"
+        body = (
+            f"<p>Hi {customer_name or 'there'},</p>"
+            "<p>Your quotation is ready. Log in to view it in the portal.</p>"
+            "<p style='font-size: 13px; color: #666;'>If you were not expecting this email, you can ignore it.</p>"
+        )
+        button_label = "Log in"
+
+    html = render_email(
+        heading=heading,
+        body_html=body,
+        button_label=button_label,
+        button_url=link,
+        accent="#0F766E",
+    )
+    return send_email(email, f"Quotation {quotation_number} is ready", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_sign_in_alert_email")
+def send_sign_in_alert_email(
+    email: str,
+    full_name: str = "",
+    when: str = "",
+    ip_address: str = "",
+    user_agent: str = "",
+) -> str:
+    """Tells a portal customer their account was just signed into.
+
+    Sent to customers only. Internal staff sign in dozens of times a day and
+    an alert per login would train everyone to ignore the one that matters.
+    """
+    details = "".join(
+        f"<tr><td style='padding:4px 12px 4px 0;color:#6B7280'>{label}</td>"
+        f"<td style='padding:4px 0'><strong>{value}</strong></td></tr>"
+        for label, value in (
+            ("When", when),
+            ("From", ip_address),
+            ("Device", user_agent[:120] if user_agent else ""),
+        )
+        if value
+    )
+    html = render_email(
+        heading="New sign-in to your account",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            "<p>Your account was just signed into. If this was you, there is "
+            "nothing to do.</p>"
+            f"<table style='font-size:14px;margin:16px 0'>{details}</table>"
+            "<p>If it was not you, change your password now.</p>"
+        ),
+        button_label="Review your account",
+        button_url=f"{settings.FRONTEND_URL}/portal",
+        accent="#B45309",
+    )
+    return send_email(email, f"New sign-in to your {settings.EMAILS_FROM_NAME} account", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_approval_requested_email")
+def send_approval_requested_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    customer_name: str = "",
+    risk_band: str = "",
+    score: float = 0.0,
+    approval_id: str = "",
+) -> str:
+    """Tells an approver a quotation is waiting on them."""
+    link = f"{settings.FRONTEND_URL}/app/approvals/{approval_id}"
+    html = render_email(
+        heading="A quotation needs your approval",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{quotation_number}</strong> for <strong>{customer_name}</strong> "
+            f"has been submitted and is waiting on you.</p>"
+            f"<p style='font-size:14px;color:#6B7280'>Blended risk: "
+            f"<strong>{risk_band.upper()}</strong> ({score:.2f})</p>"
+        ),
+        button_label="Review the quotation",
+        button_url=link,
+        accent="#B45309",
+    )
+    return send_email(email, f"Approval needed: {quotation_number}", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_approval_decision_email")
+def send_approval_decision_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    outcome: str = "",
+    decided_by: str = "",
+    note: str = "",
+    quotation_id: str = "",
+) -> str:
+    """Tells the rep what an approver decided, and why."""
+    headings = {
+        "approved": "Your quotation was approved",
+        "returned": "Your quotation was returned for revision",
+        "rejected": "Your quotation was rejected",
+        "pending": "Your quotation moved to the next approver",
+    }
+    accents = {
+        "approved": "#10B981",
+        "returned": "#B45309",
+        "rejected": "#DC2626",
+        "pending": "#4F46E5",
+    }
+    reason = (
+        f"<p style='padding:12px;background:#F3F4F6;border-radius:6px;font-size:14px'>"
+        f"<strong>{decided_by}</strong> wrote: {note}</p>"
+        if note
+        else ""
+    )
+    html = render_email(
+        heading=headings.get(outcome, "Your quotation was updated"),
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{quotation_number}</strong> is now "
+            f"<strong>{outcome.replace('_', ' ')}</strong>.</p>{reason}"
+        ),
+        button_label="Open the quotation",
+        button_url=f"{settings.FRONTEND_URL}/app/quotations/{quotation_id}",
+        accent=accents.get(outcome, "#4F46E5"),
+    )
+    return send_email(email, f"{quotation_number}: {outcome.replace('_', ' ')}", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_quotation_link_email")
+def send_quotation_link_email(
+    email: str,
+    customer_name: str = "",
+    quotation_number: str = "",
+    quotation_id: str = "",
+    total: float = 0.0,
+    currency: str = "USD",
+) -> str:
+    """Sends a customer the link to review and negotiate their quotation."""
+    link = f"{settings.FRONTEND_URL}/portal/quotations/{quotation_id}"
+    html = render_email(
+        heading="Your quotation is ready",
+        body_html=(
+            f"<p>Hello {customer_name or 'there'},</p>"
+            f"<p>Quotation <strong>{quotation_number}</strong> is ready for you to "
+            f"review, at <strong>{currency} {total:,.2f}</strong>.</p>"
+            "<p>You can ask questions on individual lines, propose a different "
+            "discount, or confirm the terms — all from your portal, without a "
+            "single email back and forth.</p>"
+        ),
+        button_label="Review your quotation",
+        button_url=link,
+        accent="#0F766E",
+    )
+    return send_email(email, f"Your quotation {quotation_number}", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_change_request_email")
+def send_change_request_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    customer_name: str = "",
+    quotation_id: str = "",
+) -> str:
+    """Tells a rep their customer has asked for different terms."""
+    html = render_email(
+        heading="Your customer has proposed different terms",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{customer_name}</strong> has requested changes to "
+            f"<strong>{quotation_number}</strong>.</p>"
+            "<p>Accepting re-runs the discount governance on the new terms, so "
+            "it may need approval again.</p>"
+        ),
+        button_label="Open the quotation",
+        button_url=f"{settings.FRONTEND_URL}/app/quotations/{quotation_id}",
+        accent="#B45309",
+    )
+    return send_email(
+        email, f"{customer_name} countered on {quotation_number}", html
+    )
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_deal_alert_email")
+def send_deal_alert_email(
+    email: str,
+    full_name: str = "",
+    quotation_number: str = "",
+    quotation_id: str = "",
+    alert_type: str = "",
+    detail: str = "",
+    action: str = "nudge",
+) -> str:
+    """A nudge to the rep, or an escalation to their manager."""
+    nudging = action == "nudge"
+    html = render_email(
+        heading=(
+            "A deal needs your attention"
+            if nudging
+            else "A deal has been escalated to you"
+        ),
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            f"<p><strong>{quotation_number}</strong> was flagged: "
+            f"<strong>{detail}</strong> "
+            f"({alert_type.replace('_', ' ')}).</p>"
+        ),
+        button_label="Open the quotation",
+        button_url=f"{settings.FRONTEND_URL}/app/quotations/{quotation_id}",
+        accent="#B45309" if nudging else "#DC2626",
+    )
+    return send_email(
+        email,
+        f"{'Nudge' if nudging else 'Escalated'}: {quotation_number}",
+        html,
+    )

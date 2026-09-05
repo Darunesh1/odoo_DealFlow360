@@ -1,7 +1,7 @@
 from typing import AsyncGenerator
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -29,23 +29,34 @@ app.core.database.async_session_maker = async_sessionmaker(
 )
 
 
-@pytest.fixture(autouse=True)
-async def clean_state() -> AsyncGenerator[None, None]:
-    """Clears users and the Redis token deny list between tests."""
-    yield
+async def _truncate_everything() -> None:
     async with app.core.database.async_session_maker() as session:
-        try:
-            # Roles first: the FK cascade would cover it, but being explicit
-            # keeps this working if ondelete ever changes.
-            await session.execute(delete(UserRole))
-            await session.execute(delete(User))
-            await session.commit()
-        except Exception:
-            await session.rollback()
+        # Driven off the metadata rather than a hand-maintained list: with
+        # thirty-odd tables, listing them in FK order is a trap that only bites
+        # when someone adds a table and forgets. CASCADE handles the ordering.
+        tables = ", ".join(
+            f'"{t.name}"' for t in app.core.database.Base.metadata.sorted_tables
+        )
+        await session.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        await session.commit()
     try:
         await get_redis_client().flushdb()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+async def clean_state() -> AsyncGenerator[None, None]:
+    """Empties the database and the Redis keyspace around every test.
+
+    Before as well as after. This database is shared with the dev server, so
+    cleaning only on the way out leaves the FIRST test of a run looking at
+    whatever the startup seeder wrote - which makes a suite pass or fail
+    depending on whether you happened to run `make api` beforehand.
+    """
+    await _truncate_everything()
+    yield
+    await _truncate_everything()
 
 
 @pytest.fixture

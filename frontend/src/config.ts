@@ -2,7 +2,7 @@
  * Single place to rebrand the application. Everything user facing reads from here.
  */
 export const APP_NAME = "DealFlow360"
-export const APP_TAGLINE = "The backbone your product is built on"
+export const APP_TAGLINE = "Every deal, from first touch to close"
 
 /** Base URL of the API. */
 export const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api"

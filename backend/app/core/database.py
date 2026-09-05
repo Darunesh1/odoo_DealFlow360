@@ -1,6 +1,7 @@
 import logging
 from typing import AsyncGenerator
 import asyncpg
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -80,18 +81,65 @@ async def init_db() -> None:
         logger.info("Dev environment detected: verifying database exists...")
         await create_database_if_not_exists()
 
-    # Import models here to register them with the Base metadata before table
-    # creation. UserRole must be imported too, or its table is silently skipped
-    # and every authenticated request fails on a missing relation.
-    from app.models.user import Role, User, UserRole  # noqa: F401
+    # Import every model here to register it with the Base metadata before
+    # table creation. A model that is not imported has its table SILENTLY
+    # skipped, surfacing much later as a missing-relation error at request
+    # time. The package __init__ imports all of them, so one line covers it.
+    import app.models  # noqa: F401
 
     logger.info("Initializing database tables...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Lightweight compatibility migration for the hackathon branch. The
+        # current schema is mostly create-all driven, so additive columns need a
+        # tiny startup fix when an existing database already has the old table.
+        has_recipient = await conn.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'quotations'
+                  AND column_name = 'recipient_email'
+                """
+            )
+        )
+        if has_recipient.first() is None:
+            await conn.execute(
+                text("ALTER TABLE quotations ADD COLUMN recipient_email VARCHAR(255)")
+            )
+        for column_name, ddl in [
+            ("warehouse_id", "ALTER TABLE quotation_lines ADD COLUMN warehouse_id UUID"),
+            ("warehouse_name", "ALTER TABLE quotation_lines ADD COLUMN warehouse_name VARCHAR(255)"),
+            ("warehouse_code", "ALTER TABLE quotation_lines ADD COLUMN warehouse_code VARCHAR(32)"),
+            (
+                "warehouse_bin_location",
+                "ALTER TABLE quotation_lines ADD COLUMN warehouse_bin_location VARCHAR(100)",
+            ),
+            (
+                "stock_available_at_entry",
+                "ALTER TABLE quotation_lines ADD COLUMN stock_available_at_entry INTEGER",
+            ),
+        ]:
+            has_column = await conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'quotation_lines'
+                      AND column_name = :column_name
+                    """
+                ),
+                {"column_name": column_name},
+            )
+            if has_column.first() is None:
+                await conn.execute(text(ddl))
     logger.info("Database tables initialized successfully.")
 
     # Imported here rather than at module scope to avoid a
     # database -> seed -> services -> models -> database import cycle.
-    from app.core.seed import seed_users
+    from app.core.seed import seed_demo_data, seed_users
 
+    await seed_demo_data()
     await seed_users()

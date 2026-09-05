@@ -19,9 +19,11 @@ import {
 /** Human readable names for the segments that appear after /app. */
 const SEGMENT_LABELS: Record<string, string> = {
   app: "Dashboard",
+  quotations: "Quotations",
   profile: "Profile",
   settings: "Settings",
   admin: "Administration",
+  catalog: "Catalog",
   users: "Users",
 }
 
