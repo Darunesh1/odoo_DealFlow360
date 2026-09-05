@@ -87,6 +87,17 @@ async def list_products(db: AsyncSession) -> Sequence[Product]:
     return result.scalars().all()
 
 
+async def list_active_products(db: AsyncSession) -> Sequence[Product]:
+    stmt = (
+        select(Product)
+        .options(selectinload(Product.category))
+        .where(Product.is_active.is_(True))
+        .order_by(Product.name)
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
+
+
 async def create_product(db: AsyncSession, obj_in: ProductCreate) -> Product:
     product = Product(**obj_in.model_dump())
     db.add(product)
@@ -211,6 +222,22 @@ async def get_stock_item(db: AsyncSession, warehouse_id: uuid.UUID, product_id: 
         )
     )
     return await _get_one(db, stmt)
+
+
+async def list_stock_for_product(db: AsyncSession, product_id: uuid.UUID) -> Sequence[StockItem]:
+    stmt = (
+        select(StockItem)
+        .options(selectinload(StockItem.warehouse), selectinload(StockItem.product))
+        .join(StockItem.warehouse)
+        .where(and_(StockItem.product_id == product_id, Warehouse.is_active.is_(True)))
+        .order_by(
+            StockItem.quantity_available.desc(),
+            Warehouse.split_priority.asc(),
+            Warehouse.name.asc(),
+        )
+    )
+    result = await db.execute(stmt)
+    return result.scalars().all()
 
 
 async def list_stock_items(

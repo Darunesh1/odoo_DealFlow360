@@ -16,8 +16,13 @@ class QuotationLineBase(BaseModel):
 
     product_id: Optional[uuid.UUID] = None
     category_id: Optional[uuid.UUID] = None
+    warehouse_id: Optional[uuid.UUID] = None
     product_name: str
     category_name: Optional[str] = None
+    warehouse_name: Optional[str] = None
+    warehouse_code: Optional[str] = None
+    warehouse_bin_location: Optional[str] = None
+    stock_available_at_entry: Optional[int] = None
     quantity: int
     unit_price: float
     list_price_at_entry: float

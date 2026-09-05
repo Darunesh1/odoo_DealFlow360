@@ -1,13 +1,19 @@
 from typing import Any
+import uuid
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, require_roles
 from app.models.user import Role
-from app.schemas.catalog import PriceListItemRead, PriceListRead, ProductRead
+from app.schemas.catalog import PriceListItemRead, PriceListRead, ProductRead, StockRead
 from app.schemas.customer import CustomerRead, CustomerTierRead
-from app.services.catalog_service import list_customers, list_price_lists, list_products
+from app.services.catalog_service import (
+    list_active_products,
+    list_customers,
+    list_price_lists,
+    list_stock_for_product,
+)
 
 router = APIRouter(dependencies=[Depends(require_roles(Role.ADMIN, Role.SALES_REP, Role.SALES_MANAGER))])
 
@@ -46,7 +52,33 @@ async def read_customers(db: AsyncSession = Depends(get_db)) -> Any:
 
 @router.get("/products", response_model=list[ProductRead])
 async def read_products(db: AsyncSession = Depends(get_db)) -> Any:
-    return [ProductRead.model_validate(item) for item in await list_products(db)]
+    return [ProductRead.model_validate(item) for item in await list_active_products(db)]
+
+
+@router.get("/products/{product_id}/stock", response_model=list[StockRead])
+async def read_product_stock(product_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Any:
+    stock_items = await list_stock_for_product(db, product_id)
+    return [
+        StockRead(
+            id=item.id,
+            warehouse_id=item.warehouse_id,
+            product_id=item.product_id,
+            quantity_on_hand=item.quantity_on_hand,
+            quantity_reserved=item.quantity_reserved,
+            reorder_point=item.reorder_point,
+            reorder_quantity=item.reorder_quantity,
+            lead_time_days=item.lead_time_days,
+            bin_location=item.bin_location,
+            created_at=item.created_at,
+            updated_at=item.updated_at,
+            quantity_available=item.quantity_available,
+            warehouse_name=item.warehouse.name if item.warehouse else "",
+            warehouse_code=item.warehouse.code if item.warehouse else "",
+            product_name=item.product.name if item.product else "",
+            sku=item.product.sku if item.product else "",
+        )
+        for item in stock_items
+    ]
 
 
 @router.get("/price-lists", response_model=list[PriceListRead])

@@ -18,6 +18,7 @@ from app.models.catalog import RecurringInterval
 if TYPE_CHECKING:
     from app.models.catalog import PriceList, Product, ProductCategory
     from app.models.customer import Customer, CustomerTier
+    from app.models.inventory import Warehouse
 
 
 class QuotationStatus(str, enum.Enum):
@@ -179,8 +180,15 @@ class QuotationLine(Base, TimestampMixin):
     category_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("product_categories.id", ondelete="RESTRICT"), nullable=True
     )
+    warehouse_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("warehouses.id", ondelete="RESTRICT"), nullable=True
+    )
     product_name: Mapped[str] = mapped_column(String(255), nullable=False)
     category_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    warehouse_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    warehouse_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    warehouse_bin_location: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    stock_available_at_entry: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     # What the price list resolved to, including variant deltas. The rep's
@@ -239,6 +247,9 @@ class QuotationLine(Base, TimestampMixin):
         foreign_keys=[product_id], lazy="selectin"
     )
     category: Mapped[Optional["ProductCategory"]] = relationship(lazy="selectin")
+    warehouse: Mapped[Optional["Warehouse"]] = relationship(
+        foreign_keys=[warehouse_id], lazy="selectin"
+    )
 
     __table_args__ = (
         UniqueConstraint("quotation_id", "position", name="uq_quotation_line_position"),

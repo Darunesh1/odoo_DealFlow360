@@ -26,6 +26,7 @@ from app.services.catalog_service import (
     get_customer_by_id,
     get_price_list_by_id,
     get_product_by_id,
+    list_stock_for_product,
     resolve_price_list_unit_price,
 )
 from app.services.user_service import apply_roles, create_invited_user, get_user_by_email
@@ -65,6 +66,41 @@ def _approval_roles_for_band(band: RiskBand) -> list[Role]:
     if band in {RiskBand.MEDIUM, RiskBand.HIGH}:
         return [Role.SALES_MANAGER, Role.FINANCE]
     return []
+
+
+async def _allocate_stock_line(
+    db: AsyncSession,
+    *,
+    product_id: uuid.UUID,
+    quantity: int,
+) -> tuple[uuid.UUID, str, str, Optional[str], int]:
+    stock_items = await list_stock_for_product(db, product_id)
+    for stock in stock_items:
+        if stock.quantity_available >= quantity and stock.warehouse is not None:
+            return (
+                stock.warehouse.id,
+                stock.warehouse.name,
+                stock.warehouse.code,
+                stock.bin_location,
+                int(stock.quantity_available),
+            )
+    raise ValueError("Insufficient stock for the selected product")
+
+
+def _apply_stock_snapshot(
+    line: QuotationLine,
+    *,
+    warehouse_id: uuid.UUID,
+    warehouse_name: str,
+    warehouse_code: str,
+    warehouse_bin_location: Optional[str],
+    stock_available_at_entry: int,
+) -> None:
+    line.warehouse_id = warehouse_id
+    line.warehouse_name = warehouse_name
+    line.warehouse_code = warehouse_code
+    line.warehouse_bin_location = warehouse_bin_location
+    line.stock_available_at_entry = stock_available_at_entry
 
 
 async def _load_quotation(db: AsyncSession, quotation_id: uuid.UUID) -> Optional[Quotation]:
@@ -247,16 +283,28 @@ async def add_line(db: AsyncSession, quotation: Quotation, obj_in: QuotationLine
     product = await get_product_by_id(db, obj_in.product_id)
     if not product:
         raise ValueError("Product not found")
+    if not product.is_active:
+        raise ValueError("Product is inactive")
     if quotation.status != QuotationStatus.DRAFT:
         raise ValueError("Only draft quotations can be edited")
+    warehouse_id, warehouse_name, warehouse_code, warehouse_bin_location, stock_available_at_entry = await _allocate_stock_line(
+        db,
+        product_id=product.id,
+        quantity=obj_in.quantity,
+    )
 
     line = QuotationLine(
         quotation_id=quotation.id,
         position=await _next_position(db, quotation.id),
         product_id=product.id,
         category_id=product.category_id,
+        warehouse_id=warehouse_id,
         product_name=product.name,
         category_name=product.category.name,
+        warehouse_name=warehouse_name,
+        warehouse_code=warehouse_code,
+        warehouse_bin_location=warehouse_bin_location,
+        stock_available_at_entry=stock_available_at_entry,
         quantity=obj_in.quantity,
         unit_price=_unit(resolve_price_list_unit_price(product, quotation.price_list)),
         list_price_at_entry=_money(product.list_price),
@@ -291,6 +339,23 @@ async def update_line(db: AsyncSession, quotation: Quotation, line_id: uuid.UUID
     line = next((item for item in quotation.lines if item.id == line_id), None)
     if line is None:
         raise ValueError("Quotation line not found")
+    if line.product_id is None:
+        raise ValueError("Quotation line product is missing")
+    quantity = obj_in.quantity if obj_in.quantity is not None else line.quantity
+    if quantity != line.quantity or line.warehouse_id is None:
+        warehouse_id, warehouse_name, warehouse_code, warehouse_bin_location, stock_available_at_entry = await _allocate_stock_line(
+            db,
+            product_id=line.product_id,
+            quantity=quantity,
+        )
+        _apply_stock_snapshot(
+            line,
+            warehouse_id=warehouse_id,
+            warehouse_name=warehouse_name,
+            warehouse_code=warehouse_code,
+            warehouse_bin_location=warehouse_bin_location,
+            stock_available_at_entry=stock_available_at_entry,
+        )
     for field, value in obj_in.model_dump(exclude_unset=True).items():
         setattr(line, field, value)
     db.add(line)

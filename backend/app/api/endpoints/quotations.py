@@ -37,6 +37,10 @@ def _not_found(message: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
 
 
+def _bad_request(exc: ValueError) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
 @router.get("/quotations", response_model=list[QuotationRead])
 async def read_quotations(db: AsyncSession = Depends(get_db)) -> Any:
     return [QuotationRead.model_validate(item) for item in await list_quotations(db)]
@@ -48,7 +52,10 @@ async def create_quotation(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await create_draft_quotation(db, owner=current_user, obj_in=body)
+    try:
+        quotation = await create_draft_quotation(db, owner=current_user, obj_in=body)
+    except ValueError as exc:
+        raise _bad_request(exc)
     return QuotationRead.model_validate(quotation)
 
 
@@ -65,7 +72,10 @@ async def patch_quotation(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     quotation = await ensure_quotation_loaded(db, quotation_id)
-    updated = await update_quotation(db, quotation, body)
+    try:
+        updated = await update_quotation(db, quotation, body)
+    except ValueError as exc:
+        raise _bad_request(exc)
     return QuotationRead.model_validate(updated)
 
 
@@ -76,7 +86,10 @@ async def create_quotation_line(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     quotation = await ensure_quotation_loaded(db, quotation_id)
-    updated = await add_line(db, quotation, body)
+    try:
+        updated = await add_line(db, quotation, body)
+    except ValueError as exc:
+        raise _bad_request(exc)
     return QuotationRead.model_validate(updated)
 
 
@@ -88,7 +101,10 @@ async def patch_quotation_line(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     quotation = await ensure_quotation_loaded(db, quotation_id)
-    updated = await update_line(db, quotation, line_id, body)
+    try:
+        updated = await update_line(db, quotation, line_id, body)
+    except ValueError as exc:
+        raise _bad_request(exc)
     return QuotationRead.model_validate(updated)
 
 
@@ -99,7 +115,10 @@ async def delete_quotation_line(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     quotation = await ensure_quotation_loaded(db, quotation_id)
-    updated = await remove_line(db, quotation, line_id)
+    try:
+        updated = await remove_line(db, quotation, line_id)
+    except ValueError as exc:
+        raise _bad_request(exc)
     return QuotationRead.model_validate(updated)
 
 
@@ -110,7 +129,10 @@ async def patch_quotation_discount(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     quotation = await ensure_quotation_loaded(db, quotation_id)
-    updated = await update_quotation(db, quotation, body)
+    try:
+        updated = await update_quotation(db, quotation, body)
+    except ValueError as exc:
+        raise _bad_request(exc)
     return QuotationRead.model_validate(updated)
 
 
@@ -124,7 +146,10 @@ async def submit_quotation_api(
     customer = await get_customer_by_id(db, quotation.customer_id)
     if not customer:
         raise _not_found("Customer not found")
-    submitted, approval = await submit_quotation(db, quotation, current_user)
+    try:
+        submitted, approval = await submit_quotation(db, quotation, current_user)
+    except ValueError as exc:
+        raise _bad_request(exc)
     if submitted.recipient_email:
         await sync_customer_portal_email(
             db,
@@ -137,4 +162,3 @@ async def submit_quotation_api(
         approval_required=submitted.requires_approval,
         approval=approval,
     )
-

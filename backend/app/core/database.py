@@ -108,6 +108,33 @@ async def init_db() -> None:
             await conn.execute(
                 text("ALTER TABLE quotations ADD COLUMN recipient_email VARCHAR(255)")
             )
+        for column_name, ddl in [
+            ("warehouse_id", "ALTER TABLE quotation_lines ADD COLUMN warehouse_id UUID"),
+            ("warehouse_name", "ALTER TABLE quotation_lines ADD COLUMN warehouse_name VARCHAR(255)"),
+            ("warehouse_code", "ALTER TABLE quotation_lines ADD COLUMN warehouse_code VARCHAR(32)"),
+            (
+                "warehouse_bin_location",
+                "ALTER TABLE quotation_lines ADD COLUMN warehouse_bin_location VARCHAR(100)",
+            ),
+            (
+                "stock_available_at_entry",
+                "ALTER TABLE quotation_lines ADD COLUMN stock_available_at_entry INTEGER",
+            ),
+        ]:
+            has_column = await conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'quotation_lines'
+                      AND column_name = :column_name
+                    """
+                ),
+                {"column_name": column_name},
+            )
+            if has_column.first() is None:
+                await conn.execute(text(ddl))
     logger.info("Database tables initialized successfully.")
 
     # Imported here rather than at module scope to avoid a
