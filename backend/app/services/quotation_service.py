@@ -11,7 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.security import create_invite_token, is_password_usable
-from app.models.approval import Approval, ApprovalLineSnapshot, ApprovalStatus, ApprovalStep, ApprovalStepStatus, ApprovalTrigger
+from app.models.analytics import AuditAction
+from app.models.approval import Approval, ApprovalTrigger
 from app.models.catalog import CategoryDiscountLimit, Product, ProductStatus, ProductVariant
 from app.models.customer import Customer
 from app.models.quotation import LineSource, Quotation, QuotationLine, QuotationStatus, RiskBand
@@ -29,6 +30,7 @@ from app.services.catalog_service import (
     get_variant_by_id,
     list_stock_for_variant,
 )
+from app.services import approval_service, audit_service
 from app.services.pricing_service import resolve_variant_price
 from app.services.user_service import apply_roles, create_invited_user, get_user_by_email
 from app.tasks.email_tasks import send_customer_portal_email
@@ -64,23 +66,6 @@ def _risk_band(score: Decimal) -> RiskBand:
     if score < 45:
         return RiskBand.MEDIUM
     return RiskBand.HIGH
-
-
-def _approval_roles_for_band(band: RiskBand) -> list[Role]:
-    """A Sales Rep is never an approver and Admin is never a step.
-
-    Within every ceiling, nobody approves. Over a ceiling, a Sales Manager
-    always does. Finance joins only on high risk.
-
-    This is the last hardcoded copy of the chain: the next phase reads it from
-    approval_rules / approval_rule_steps, which is what makes screen 18
-    configuration rather than decoration.
-    """
-    if band in {RiskBand.LOW, RiskBand.MEDIUM}:
-        return [Role.SALES_MANAGER]
-    if band == RiskBand.HIGH:
-        return [Role.SALES_MANAGER, Role.FINANCE]
-    return []
 
 
 async def _allocate_stock_line(
@@ -144,36 +129,20 @@ async def _load_quotation(db: AsyncSession, quotation_id: uuid.UUID) -> Optional
             selectinload(Quotation.customer).selectinload(Customer.tier),
             selectinload(Quotation.customer_tier),
             selectinload(Quotation.lines),
+            selectinload(Quotation.approvals),
         )
         .where(Quotation.id == quotation_id)
-    )
-    result = await db.execute(stmt)
-    quotation = result.scalar_one_or_none()
-    if quotation is not None:
-        latest = await _load_latest_approval(db, quotation.id)
-        quotation.approval = latest  # type: ignore[attr-defined]
-    return quotation
-
-
-async def _load_latest_approval(db: AsyncSession, quotation_id: uuid.UUID) -> Optional[Approval]:
-    stmt = (
-        select(Approval)
-        .options(selectinload(Approval.steps), selectinload(Approval.line_snapshots))
-        .where(Approval.quotation_id == quotation_id)
-        .order_by(Approval.round_number.desc())
-        .limit(1)
     )
     result = await db.execute(stmt)
     return result.scalar_one_or_none()
 
 
 async def list_quotations(db: AsyncSession) -> Sequence[Quotation]:
+    # Quotation.approvals is selectin-loaded at the mapper, so the rounds come
+    # back in one extra query for the whole page rather than one per row.
     stmt = select(Quotation).order_by(Quotation.updated_at.desc())
     result = await db.execute(stmt)
-    quotations = list(result.scalars().all())
-    for quotation in quotations:
-        quotation.approval = await _load_latest_approval(db, quotation.id)  # type: ignore[attr-defined]
-    return quotations
+    return list(result.scalars().all())
 
 
 async def create_draft_quotation(
@@ -467,67 +436,50 @@ async def update_quotation(db: AsyncSession, quotation: Quotation, obj_in: Quota
     return await recalculate_quotation(db, quotation)
 
 
-async def submit_quotation(db: AsyncSession, quotation: Quotation, submitted_by: User) -> tuple[Quotation, Optional[Approval]]:
+async def submit_quotation(
+    db: AsyncSession, quotation: Quotation, submitted_by: User
+) -> tuple[Quotation, Optional[Approval]]:
+    """Submits a draft for approval, or auto-approves it.
+
+    Both paths write a real approval round - see approval_service.open_round
+    for why the no-approval case is a rule with zero steps rather than a
+    branch. The routing decision itself is read from approval_rules.
+    """
     quotation = await recalculate_quotation(db, quotation)
     if quotation.status != QuotationStatus.DRAFT:
         raise ValueError("Only draft quotations can be submitted")
 
-    approval: Optional[Approval] = None
-    if quotation.requires_approval:
-        approval = Approval(
-            quotation_id=quotation.id,
-            round_number=1,
-            rule_id=None,
-            rule_name=f"{quotation.risk_band.value.title()} Risk Approval",
-            blended_risk_score=quotation.blended_risk_score,
-            risk_band=quotation.risk_band,
-            quotation_total=quotation.total,
-            discount_total=quotation.discount_total,
-            status=ApprovalStatus.PENDING,
-            trigger=ApprovalTrigger.REP_SUBMIT,
-            submitted_by_id=submitted_by.id,
-            submitted_by_name=submitted_by.full_name or submitted_by.email,
-            submitted_at=datetime.now(timezone.utc),
-        )
-        db.add(approval)
-        await db.flush()
-        for position, role in enumerate(_approval_roles_for_band(quotation.risk_band), start=1):
-            db.add(
-                ApprovalStep(
-                    approval_id=approval.id,
-                    step_order=position,
-                    role=role,
-                    status=ApprovalStepStatus.PENDING,
-                )
-            )
-        for position, line in enumerate(quotation.lines, start=1):
-            over_points = max(Decimal(str(line.discount_percent)) - Decimal(str(line.allowed_discount_percent)), Decimal("0"))
-            db.add(
-                ApprovalLineSnapshot(
-                    approval_id=approval.id,
-                    line_id=line.id,
-                    position=position,
-                    line_label=line.product_name,
-                    discount_percent=line.discount_percent,
-                    allowed_discount_percent=line.allowed_discount_percent,
-                    over_by_points=float(over_points),
-                    line_net=line.line_net,
-                )
-            )
-        quotation.status = QuotationStatus.PENDING_APPROVAL
-    else:
-        quotation.status = QuotationStatus.APPROVED
-        quotation.confirmed_at = None
-
-    quotation.current_round = 1
-    quotation.last_activity_at = datetime.now(timezone.utc)
-    db.add(quotation)
+    # Round 1 is a submit; anything after a return is a resubmit, which is what
+    # the audit trail on the approval screen distinguishes.
+    trigger = (
+        ApprovalTrigger.REP_SUBMIT
+        if not quotation.current_round
+        else ApprovalTrigger.REP_RESUBMIT
+    )
+    approval = await approval_service.open_round(
+        db, quotation=quotation, submitted_by=submitted_by, trigger=trigger
+    )
+    audit_service.record(
+        db,
+        entity_type=audit_service.ENTITY_QUOTATION,
+        entity_id=quotation.id,
+        action=(
+            AuditAction.SUBMITTED
+            if trigger == ApprovalTrigger.REP_SUBMIT
+            else AuditAction.RESUBMITTED
+        ),
+        user=submitted_by,
+        context={
+            "round": approval.round_number,
+            "risk_band": quotation.risk_band.value,
+            "blended_risk_score": float(quotation.blended_risk_score),
+            "chain": [step.role.value for step in approval.steps],
+        },
+    )
     await db.commit()
+
     quotation = await ensure_quotation_loaded(db, quotation.id)
-    if approval is not None:
-        approval = await _load_latest_approval(db, quotation.id)
-        quotation.approval = approval  # type: ignore[attr-defined]
-    return quotation, approval
+    return quotation, quotation.approval
 
 
 async def sync_customer_portal_email(

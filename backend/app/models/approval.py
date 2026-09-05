@@ -3,7 +3,7 @@
 import enum
 import uuid
 from datetime import datetime
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from sqlalchemy import (
     Boolean,
@@ -26,6 +26,9 @@ from app.core.database import Base
 from app.models.base import MONEY, PERCENT, POINTS, TimestampMixin
 from app.models.quotation import RiskBand
 from app.models.user import Role
+
+if TYPE_CHECKING:
+    from app.models.quotation import Quotation
 
 # The Role enum already owns a Postgres type created for user_roles. Build ONE
 # instance and reuse this same object on every column below - two separately
@@ -203,6 +206,7 @@ class Approval(Base, TimestampMixin):
         DateTime(timezone=True), nullable=True
     )
 
+    quotation: Mapped["Quotation"] = relationship(back_populates="approvals")
     steps: Mapped[list["ApprovalStep"]] = relationship(
         back_populates="approval",
         cascade="all, delete-orphan",

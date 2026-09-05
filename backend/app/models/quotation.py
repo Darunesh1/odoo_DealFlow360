@@ -16,6 +16,7 @@ from app.models.base import MONEY, PERCENT, POINTS, UNIT_PRICE, TimestampMixin
 from app.models.catalog import RecurringInterval
 
 if TYPE_CHECKING:
+    from app.models.approval import Approval
     from app.models.catalog import Product, ProductVariant
     from app.models.customer import Customer, CustomerTier
     from app.models.inventory import Warehouse
@@ -142,6 +143,19 @@ class Quotation(Base, TimestampMixin):
         back_populates="quotation", cascade="all, delete-orphan", lazy="selectin",
         order_by="QuotationLine.position",
     )
+    # Newest round first, so `approvals[0]` is the live one. A real mapped
+    # relationship rather than an attribute the service pins on after the fact:
+    # the response schema reads it during serialization, which is outside any
+    # await, so it has to be selectin-loaded like every other collection here.
+    approvals: Mapped[list["Approval"]] = relationship(
+        back_populates="quotation", cascade="all, delete-orphan", lazy="selectin",
+        order_by="Approval.round_number.desc()",
+    )
+
+    @property
+    def approval(self) -> Optional["Approval"]:
+        """The current round, which is what every approval screen shows."""
+        return self.approvals[0] if self.approvals else None
 
     __table_args__ = (
         CheckConstraint(

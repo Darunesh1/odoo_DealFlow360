@@ -25,6 +25,26 @@ class ApprovalStepRead(BaseModel):
     note: Optional[str] = None
 
 
+class ApprovalLineSnapshotRead(BaseModel):
+    """One row of the approval screen's "Why This Quote Was Flagged" table.
+
+    Read from the frozen snapshot, never from the live line - a rep who fixes
+    the offending line and resubmits must not make a returned round render as
+    if nothing was ever wrong with it.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    line_id: Optional[uuid.UUID] = None
+    position: int
+    line_label: str
+    discount_percent: float
+    allowed_discount_percent: float
+    over_by_points: float
+    line_net: float
+
+
 class ApprovalRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -44,6 +64,7 @@ class ApprovalRead(BaseModel):
     submitted_at: datetime
     decided_at: Optional[datetime] = None
     steps: List[ApprovalStepRead] = Field(default_factory=list)
+    line_snapshots: List[ApprovalLineSnapshotRead] = Field(default_factory=list)
 
 
 class ApprovalRuleStepRead(BaseModel):
