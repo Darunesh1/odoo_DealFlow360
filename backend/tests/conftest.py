@@ -1,7 +1,7 @@
 from typing import AsyncGenerator
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -34,14 +34,14 @@ async def clean_state() -> AsyncGenerator[None, None]:
     """Clears users and the Redis token deny list between tests."""
     yield
     async with app.core.database.async_session_maker() as session:
-        try:
-            # Roles first: the FK cascade would cover it, but being explicit
-            # keeps this working if ondelete ever changes.
-            await session.execute(delete(UserRole))
-            await session.execute(delete(User))
-            await session.commit()
-        except Exception:
-            await session.rollback()
+        # Driven off the metadata rather than a hand-maintained list: with
+        # thirty-odd tables, listing them in FK order is a trap that only bites
+        # when someone adds a table and forgets. CASCADE handles the ordering.
+        tables = ", ".join(
+            f'"{t.name}"' for t in app.core.database.Base.metadata.sorted_tables
+        )
+        await session.execute(text(f"TRUNCATE {tables} RESTART IDENTITY CASCADE"))
+        await session.commit()
     try:
         await get_redis_client().flushdb()
     except Exception:
