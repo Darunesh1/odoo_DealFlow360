@@ -31,6 +31,11 @@ class PortalLine(BaseModel):
     quantity: int
     unit_price: float
     discount_percent: float
+    # What this line comes to after its discount and BEFORE tax. Shown as the
+    # row total, so price x (1 - discount) reconciles on the row; tax is added
+    # once in the summary rather than silently inside every line.
+    line_net: float
+    line_tax: float
     line_total: float
     is_recurring: bool
     recurring_interval: Optional[RecurringInterval] = None

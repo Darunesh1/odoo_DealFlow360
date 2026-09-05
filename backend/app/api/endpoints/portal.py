@@ -142,6 +142,8 @@ async def _detail(db: AsyncSession, quotation: Quotation) -> PortalQuotation:
                 quantity=line.quantity,
                 unit_price=float(line.unit_price),
                 discount_percent=float(line.discount_percent),
+                line_net=float(line.line_net),
+                line_tax=float(line.line_tax),
                 line_total=float(line.line_total),
                 is_recurring=line.is_recurring,
                 recurring_interval=line.recurring_interval,

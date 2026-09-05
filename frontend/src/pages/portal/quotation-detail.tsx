@@ -52,6 +52,8 @@ export default function PortalQuotationDetailPage() {
   const openRequest = quotation.change_requests.find(
     (request) => request.status === "open"
   )
+  // Only worth labelling the column when tax actually applies to something.
+  const hasTax = quotation.lines.some((line) => line.line_tax > 0)
 
   return (
     <div className="space-y-6">
@@ -109,7 +111,16 @@ export default function PortalQuotationDetailPage() {
                   <TableHead className="text-right">Qty</TableHead>
                   <TableHead className="text-right">Price</TableHead>
                   <TableHead className="text-right">Discount</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
+                  {/* Net of tax, so the row reconciles: price x (1 - discount).
+                      Tax is added once in the summary underneath. */}
+                  <TableHead className="text-right">
+                    Amount
+                    {hasTax ? (
+                      <span className="ml-1 font-normal text-muted-foreground">
+                        (ex. tax)
+                      </span>
+                    ) : null}
+                  </TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -139,7 +150,7 @@ export default function PortalQuotationDetailPage() {
                       {line.discount_percent}%
                     </TableCell>
                     <TableCell className="text-right font-mono tabular-nums">
-                      {money(line.line_total, quotation.currency)}
+                      {money(line.line_net, quotation.currency)}
                     </TableCell>
                     <TableCell className="text-right">
                       <Button

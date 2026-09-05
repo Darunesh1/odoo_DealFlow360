@@ -224,7 +224,14 @@ export default function QuotationDetailPage() {
                         <TableHead>Discount</TableHead>
                         <TableHead className="text-right">Limit</TableHead>
                         <TableHead>Status</TableHead>
-                        <TableHead className="text-right">Total</TableHead>
+                        <TableHead className="text-right">
+                          Amount
+                          {quotation.tax_total > 0 ? (
+                            <span className="ml-1 font-normal text-muted-foreground">
+                              (ex. tax)
+                            </span>
+                          ) : null}
+                        </TableHead>
                         <TableHead />
                       </TableRow>
                     </TableHeader>

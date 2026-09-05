@@ -178,7 +178,9 @@ export function LineRow({
       </TableCell>
 
       <TableCell className="text-right font-mono tabular-nums">
-        {money(line.line_total, currency)}
+        {/* Net of tax. The totals strip adds tax once; a tax-inclusive figure
+            here makes a discounted line look more expensive than its price. */}
+        {money(line.line_net, currency)}
       </TableCell>
 
       <TableCell className="w-10">

@@ -518,6 +518,10 @@ export interface PortalLine {
   quantity: number
   unit_price: number
   discount_percent: number
+  /** After the discount, before tax — what the row's own columns add up to. */
+  line_net: number
+  line_tax: number
+  /** Net plus this line's tax. The summary shows tax once, so tables use net. */
   line_total: number
   is_recurring: boolean
   recurring_interval: RecurringInterval | null
