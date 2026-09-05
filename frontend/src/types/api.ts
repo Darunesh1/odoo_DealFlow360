@@ -50,6 +50,36 @@ export type QuotationStatus = (typeof QUOTATION_STATUSES)[number]
 export const RISK_BANDS = ["none", "low", "medium", "high"] as const
 export type RiskBand = (typeof RISK_BANDS)[number]
 
+/** The stage chips above the quotation list, and the Kanban columns. */
+export const QUOTATION_STAGE_LABELS: Record<QuotationStatus, string> = {
+  draft: "Draft",
+  pending_approval: "Pending Approval",
+  approved: "Approved",
+  negotiation: "Negotiation",
+  confirmed: "Confirmed",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+}
+
+/** Left to right, the order a deal actually moves through. */
+export const PIPELINE_STAGES = [
+  "draft",
+  "pending_approval",
+  "approved",
+  "negotiation",
+  "confirmed",
+] as const satisfies readonly QuotationStatus[]
+
+export const QUOTATION_SORTS = [
+  "number",
+  "customer",
+  "total",
+  "status",
+  "risk",
+  "updated",
+] as const
+export type QuotationSort = (typeof QUOTATION_SORTS)[number]
+
 export const APPROVAL_STATUSES = [
   "pending",
   "approved",
@@ -325,6 +355,19 @@ export interface Approval {
   submitted_at: string
   decided_at: string | null
   steps: ApprovalStep[]
+  line_snapshots: ApprovalLineSnapshot[]
+}
+
+/** One row of the approval screen's "Why This Quote Was Flagged" table. */
+export interface ApprovalLineSnapshot {
+  id: string
+  line_id: string | null
+  position: number
+  line_label: string
+  discount_percent: number
+  allowed_discount_percent: number
+  over_by_points: number
+  line_net: number
 }
 
 export interface Quotation {
@@ -363,6 +406,50 @@ export interface Quotation {
   customer_tier: CustomerTier | null
   lines: QuotationLine[]
   approval: Approval | null
+}
+
+/** One card or table row on the quotations list. */
+export interface QuotationListRow {
+  id: string
+  number: string
+  customer_id: string
+  customer_name: string
+  customer_tier: string | null
+  owner_name: string | null
+  status: QuotationStatus
+  currency: string
+  total: number
+  margin_total: number
+  line_count: number
+  risk_band: RiskBand
+  blended_risk_score: number
+  requires_approval: boolean
+  valid_until: string | null
+  last_activity_at: string | null
+  updated_at: string
+}
+
+export type QuotationStageCounts = Record<QuotationStatus, number>
+
+export interface QuotationListPage extends Page<QuotationListRow> {
+  counts: QuotationStageCounts
+}
+
+/** One card in the upsell and cross-sell panel. */
+export interface UpsellSuggestion {
+  product_id: string
+  variant_id: string
+  name: string
+  category: string
+  sku: string
+  unit_price: number
+  unit_cost: number
+  margin_delta: number
+  margin_percent: number
+  is_promoted: boolean
+  promotion_label: string | null
+  is_recurring: boolean
+  reason: string
 }
 
 export interface QuotationSubmitResponse {

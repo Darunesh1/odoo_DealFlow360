@@ -25,6 +25,8 @@ const ResetPasswordPage = lazy(() => import("@/pages/auth/reset-password"));
 const VerifyEmailPage = lazy(() => import("@/pages/auth/verify-email"));
 const DashboardPage = lazy(() => import("@/pages/app/dashboard"));
 const QuotationsPage = lazy(() => import("@/pages/app/quotations"));
+const QuotationDetailPage = lazy(() => import("@/pages/app/quotation-detail"));
+const PipelinePage = lazy(() => import("@/pages/app/pipeline"));
 const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
 const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
 const AdminProductDetailPage = lazy(
@@ -111,6 +113,22 @@ export default function App() {
                 element={
                   <RequireRole roles={["admin", "sales_rep", "sales_manager"]}>
                     <QuotationsPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="quotations/:quotationId"
+                element={
+                  <RequireRole roles={["admin", "sales_rep", "sales_manager"]}>
+                    <QuotationDetailPage />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="pipeline"
+                element={
+                  <RequireRole roles={["admin", "sales_rep", "sales_manager"]}>
+                    <PipelinePage />
                   </RequireRole>
                 }
               />

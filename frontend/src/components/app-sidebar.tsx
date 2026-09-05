@@ -1,6 +1,7 @@
 import {
   BookOpenIcon,
   LayoutDashboardIcon,
+  LayoutGridIcon,
   FileTextIcon,
   ShieldCheckIcon,
   PackageIcon,
@@ -40,6 +41,7 @@ interface NavItem {
 const PLATFORM: NavItem[] = [
   { title: "Dashboard", url: "/app", icon: LayoutDashboardIcon },
   { title: "Quotations", url: "/app/quotations", icon: FileTextIcon, nested: true },
+  { title: "Pipeline", url: "/app/pipeline", icon: LayoutGridIcon, nested: true },
 ]
 
 // Shown to the roles that are NOT admins: an admin reaches the same screens
