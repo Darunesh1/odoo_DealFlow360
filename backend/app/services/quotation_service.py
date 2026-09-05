@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.security import create_invite_token, is_password_usable
 from app.models.approval import Approval, ApprovalLineSnapshot, ApprovalStatus, ApprovalStep, ApprovalStepStatus, ApprovalTrigger
-from app.models.catalog import PriceList, PriceListItem, Product
+from app.models.catalog import CategoryDiscountLimit, Product, ProductStatus, ProductVariant
 from app.models.customer import Customer
 from app.models.quotation import LineSource, Quotation, QuotationLine, QuotationStatus, RiskBand
 from app.models.user import Role, User
@@ -23,12 +23,13 @@ from app.schemas.quotation import (
     QuotationUpdate,
 )
 from app.services.catalog_service import (
+    get_category_limit,
     get_customer_by_id,
-    get_price_list_by_id,
     get_product_by_id,
-    list_stock_for_product,
-    resolve_price_list_unit_price,
+    get_variant_by_id,
+    list_stock_for_variant,
 )
+from app.services.pricing_service import resolve_variant_price
 from app.services.user_service import apply_roles, create_invited_user, get_user_by_email
 from app.tasks.email_tasks import send_customer_portal_email
 
@@ -50,20 +51,34 @@ def _generate_number() -> str:
     return f"Q-{stamp}-{secrets.token_hex(2).upper()}"
 
 
-def _risk_band(over_points: Decimal) -> RiskBand:
-    if over_points <= 0:
+def _risk_band(score: Decimal) -> RiskBand:
+    """Bands over the blended score, not over raw points.
+
+    Zero means every line sat inside its own ceiling, which is the only case
+    that needs no approver at all.
+    """
+    if score <= 0:
         return RiskBand.NONE
-    if over_points <= 5:
+    if score < 15:
         return RiskBand.LOW
-    if over_points <= 15:
+    if score < 45:
         return RiskBand.MEDIUM
     return RiskBand.HIGH
 
 
 def _approval_roles_for_band(band: RiskBand) -> list[Role]:
-    if band == RiskBand.LOW:
+    """A Sales Rep is never an approver and Admin is never a step.
+
+    Within every ceiling, nobody approves. Over a ceiling, a Sales Manager
+    always does. Finance joins only on high risk.
+
+    This is the last hardcoded copy of the chain: the next phase reads it from
+    approval_rules / approval_rule_steps, which is what makes screen 18
+    configuration rather than decoration.
+    """
+    if band in {RiskBand.LOW, RiskBand.MEDIUM}:
         return [Role.SALES_MANAGER]
-    if band in {RiskBand.MEDIUM, RiskBand.HIGH}:
+    if band == RiskBand.HIGH:
         return [Role.SALES_MANAGER, Role.FINANCE]
     return []
 
@@ -71,20 +86,34 @@ def _approval_roles_for_band(band: RiskBand) -> list[Role]:
 async def _allocate_stock_line(
     db: AsyncSession,
     *,
-    product_id: uuid.UUID,
+    variant_id: uuid.UUID,
     quantity: int,
-) -> tuple[uuid.UUID, str, str, Optional[str], int]:
-    stock_items = await list_stock_for_product(db, product_id)
-    for stock in stock_items:
-        if stock.quantity_available >= quantity and stock.warehouse is not None:
-            return (
-                stock.warehouse.id,
-                stock.warehouse.name,
-                stock.warehouse.code,
-                stock.bin_location,
-                int(stock.quantity_available),
-            )
-    raise ValueError("Insufficient stock for the selected product")
+) -> tuple[Optional[uuid.UUID], Optional[str], Optional[str], Optional[str], int]:
+    """Note the likeliest source warehouse and what is available in total.
+
+    Deliberately does NOT refuse a short line. A 24-unit order that no single
+    warehouse can cover is exactly the case B6 exists for - the split across
+    warehouses, and the backorder when even the total is short, belong to
+    fulfillment. Refusing here would make both unreachable, and would also
+    block services and subscriptions, which carry no stock at all.
+    """
+    stock_items = await list_stock_for_variant(db, variant_id)
+    total_available = sum(int(item.quantity_available) for item in stock_items)
+    # Richest first (list_stock_for_variant orders by availability), so the
+    # snapshot names the warehouse the planner will most likely pick.
+    preferred = next(
+        (item for item in stock_items if item.warehouse is not None and item.quantity_available > 0),
+        None,
+    )
+    if preferred is None:
+        return None, None, None, None, total_available
+    return (
+        preferred.warehouse.id,
+        preferred.warehouse.name,
+        preferred.warehouse.code,
+        preferred.bin_location,
+        total_available,
+    )
 
 
 def _apply_stock_snapshot(
@@ -106,11 +135,13 @@ def _apply_stock_snapshot(
 async def _load_quotation(db: AsyncSession, quotation_id: uuid.UUID) -> Optional[Quotation]:
     stmt = (
         select(Quotation)
+        # populate_existing is load-bearing: without it a re-query returns the
+        # identity-mapped instance with its ALREADY-LOADED lines collection,
+        # so a recalculate straight after add_line would total the previous
+        # set of lines and report the wrong risk band to the screen.
+        .execution_options(populate_existing=True)
         .options(
             selectinload(Quotation.customer).selectinload(Customer.tier),
-            selectinload(Quotation.customer).selectinload(Customer.default_price_list),
-            selectinload(Quotation.price_list).selectinload(PriceList.items).selectinload(PriceListItem.product),
-            selectinload(Quotation.price_list).selectinload(PriceList.tier),
             selectinload(Quotation.customer_tier),
             selectinload(Quotation.lines),
         )
@@ -155,7 +186,6 @@ async def create_draft_quotation(
     if not customer:
         raise ValueError("Customer not found")
 
-    price_list = await get_price_list_by_id(db, obj_in.price_list_id) if obj_in.price_list_id else customer.default_price_list
     recipient_email = obj_in.recipient_email or customer.contact_email
 
     quotation = Quotation(
@@ -166,8 +196,7 @@ async def create_draft_quotation(
         owner_name=owner.full_name or owner.email,
         sales_team_id=owner.sales_team_id,
         status=QuotationStatus.DRAFT,
-        price_list_id=price_list.id if price_list else None,
-        currency=price_list.currency if price_list else "USD",
+        currency=obj_in.currency,
         customer_tier_id=customer.tier_id,
         tier_max_discount_percent=float(customer.tier.max_discount_percent),
         order_discount_percent=obj_in.order_discount_percent,
@@ -198,11 +227,6 @@ async def _next_position(db: AsyncSession, quotation_id: uuid.UUID) -> int:
 
 
 async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quotation:
-    if quotation.price_list_id:
-        price_list = await get_price_list_by_id(db, quotation.price_list_id)
-    else:
-        price_list = None
-
     customer = await get_customer_by_id(db, quotation.customer_id)
     if not customer:
         raise ValueError("Customer not found")
@@ -212,38 +236,58 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
     tax_total = Decimal("0")
     total = Decimal("0")
     margin_total = Decimal("0")
+    subtotal_net = Decimal("0")
     max_over = Decimal("0")
     weighted_over = Decimal("0")
 
     for line in quotation.lines:
-        if not line.product_id:
+        if not line.product_id or not line.variant_id:
             continue
         product = await get_product_by_id(db, line.product_id)
         if not product:
             continue
-        category = product.category
+        category_limit_row = await get_category_limit(db, product.category)
         tier_limit = Decimal(str(customer.tier.max_discount_percent))
-        category_limit = Decimal(str(category.max_discount_percent)) if category.max_discount_percent is not None else Decimal("100")
+        # A category with no row has NO ceiling. Treating it as zero would flag
+        # every uncapped line the instant anyone discounted it.
+        category_limit = (
+            Decimal(str(category_limit_row.max_discount_percent))
+            if category_limit_row is not None
+            else Decimal("100")
+        )
         allowed = min(tier_limit, category_limit)
-        resolved_unit_price = Decimal(str(resolve_price_list_unit_price(product, price_list)))
+        variant = await get_variant_by_id(db, line.variant_id)
+        unit_cost = Decimal(str(variant.unit_cost)) if variant else Decimal("0")
+        resolved = await resolve_variant_price(
+            db,
+            variant_id=line.variant_id,
+            tier_id=customer.tier_id,
+            currency_code=quotation.currency,
+        )
+        resolved_unit_price = resolved if resolved is not None else Decimal("0")
         line_discount = Decimal(str(line.line_discount_percent))
         order_discount = Decimal(str(quotation.order_discount_percent))
         discount_percent = line_discount + order_discount
         line_net = resolved_unit_price * Decimal(str(line.quantity)) * (Decimal("1") - discount_percent / Decimal("100"))
         line_tax = line_net * Decimal(str(product.tax_percent)) / Decimal("100")
         line_total = line_net + line_tax
-        line_margin = line_net - (Decimal(str(product.unit_cost)) * Decimal(str(line.quantity)))
+        line_margin = line_net - (unit_cost * Decimal(str(line.quantity)))
         over = max(discount_percent - allowed, Decimal("0"))
 
         line.product_name = product.name
-        line.category_id = product.category_id
-        line.category_name = category.name
-        line.list_price_at_entry = _unit(product.list_price)
+        line.variant_name = None if variant is None or variant.is_default else variant.name
+        line.sku = variant.sku if variant else None
+        line.category = product.category
+        line.list_price_at_entry = _unit(resolved_unit_price)
         line.unit_price = _unit(resolved_unit_price)
-        line.unit_cost = _money(product.unit_cost)
+        line.unit_cost = _money(unit_cost)
         line.tax_percent = float(product.tax_percent)
         line.tier_limit_percent = float(tier_limit)
-        line.category_limit_percent = float(category.max_discount_percent) if category.max_discount_percent is not None else None
+        line.category_limit_percent = (
+            float(category_limit_row.max_discount_percent)
+            if category_limit_row is not None
+            else None
+        )
         line.allowed_discount_percent = float(allowed)
         line.discount_percent = float(discount_percent)
         line.line_net = _money(line_net)
@@ -256,21 +300,25 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
         tax_total += line_tax
         total += line_total
         margin_total += line_margin
+        subtotal_net += line_net
         max_over = max(max_over, over)
-        weighted_over += over * Decimal(str(line.quantity))
+        weighted_over += over * line_net
 
     quotation.customer_tier_id = customer.tier_id
     quotation.tier_max_discount_percent = float(customer.tier.max_discount_percent)
-    quotation.currency = quotation.price_list.currency if quotation.price_list else quotation.currency
     quotation.subtotal = _money(subtotal)
     quotation.discount_total = _money(discount_total)
     quotation.tax_total = _money(tax_total)
     quotation.total = _money(total)
     quotation.margin_total = _money(margin_total)
+    # Spec section 10: the worst single line AND the pattern across the order.
+    # net_base is the discounted revenue the weighting divides by.
+    weighted_mean = (weighted_over / subtotal_net) if subtotal_net else Decimal("0")
+    score = min(Decimal("100"), Decimal("8") * max_over + Decimal("5") * weighted_mean)
     quotation.max_line_over_points = float(max_over)
-    quotation.weighted_over_points = float(weighted_over)
-    quotation.blended_risk_score = float(max_over)
-    quotation.risk_band = _risk_band(max_over)
+    quotation.weighted_over_points = float(weighted_mean)
+    quotation.blended_risk_score = float(score)
+    quotation.risk_band = _risk_band(score)
     quotation.requires_approval = quotation.risk_band != RiskBand.NONE
     quotation.last_activity_at = datetime.now(timezone.utc)
     db.add(quotation)
@@ -280,47 +328,78 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
 
 
 async def add_line(db: AsyncSession, quotation: Quotation, obj_in: QuotationLineCreate) -> Quotation:
-    product = await get_product_by_id(db, obj_in.product_id)
-    if not product:
-        raise ValueError("Product not found")
-    if not product.is_active:
-        raise ValueError("Product is inactive")
     if quotation.status != QuotationStatus.DRAFT:
         raise ValueError("Only draft quotations can be edited")
+
+    variant = await get_variant_by_id(db, obj_in.variant_id)
+    if not variant or not variant.is_active:
+        raise ValueError("Variant not found")
+    product = await get_product_by_id(db, variant.product_id)
+    if not product:
+        raise ValueError("Product not found")
+    # Re-checked server-side: the picker already hides archived products, but a
+    # stale tab must not be able to quote one.
+    if product.status != ProductStatus.ACTIVE:
+        raise ValueError(f"{product.name} is archived and cannot be quoted")
+
     warehouse_id, warehouse_name, warehouse_code, warehouse_bin_location, stock_available_at_entry = await _allocate_stock_line(
         db,
-        product_id=product.id,
+        variant_id=variant.id,
         quantity=obj_in.quantity,
+    )
+    unit_price = await resolve_variant_price(
+        db,
+        variant_id=variant.id,
+        tier_id=quotation.customer.tier_id,
+        currency_code=quotation.currency,
+    )
+    if unit_price is None:
+        raise ValueError(
+            f"{variant.sku} has no {quotation.currency} price for the "
+            f"{quotation.customer.tier.name} tier"
+        )
+
+    category_limit_row = await get_category_limit(db, product.category)
+    category_limit = (
+        Decimal(str(category_limit_row.max_discount_percent))
+        if category_limit_row is not None
+        else Decimal("100")
     )
 
     line = QuotationLine(
         quotation_id=quotation.id,
         position=await _next_position(db, quotation.id),
         product_id=product.id,
-        category_id=product.category_id,
+        variant_id=variant.id,
         warehouse_id=warehouse_id,
         product_name=product.name,
-        category_name=product.category.name,
+        variant_name=None if variant.is_default else variant.name,
+        sku=variant.sku,
+        category=product.category,
         warehouse_name=warehouse_name,
         warehouse_code=warehouse_code,
         warehouse_bin_location=warehouse_bin_location,
         stock_available_at_entry=stock_available_at_entry,
         quantity=obj_in.quantity,
-        unit_price=_unit(resolve_price_list_unit_price(product, quotation.price_list)),
-        list_price_at_entry=_money(product.list_price),
-        unit_cost=_money(product.unit_cost),
+        unit_price=_unit(unit_price),
+        list_price_at_entry=_unit(unit_price),
+        unit_cost=_money(variant.unit_cost),
         tax_percent=float(product.tax_percent),
         line_discount_percent=obj_in.line_discount_percent,
-        discount_percent=obj_in.line_discount_percent + quotation.order_discount_percent,
+        discount_percent=obj_in.line_discount_percent + float(quotation.order_discount_percent),
         tier_limit_percent=float(quotation.customer.tier.max_discount_percent),
-        category_limit_percent=float(product.category.max_discount_percent) if product.category.max_discount_percent is not None else None,
+        category_limit_percent=(
+            float(category_limit_row.max_discount_percent)
+            if category_limit_row is not None
+            else None
+        ),
         allowed_discount_percent=float(min(
             Decimal(str(quotation.customer.tier.max_discount_percent)),
-            Decimal(str(product.category.max_discount_percent)) if product.category.max_discount_percent is not None else Decimal("100"),
+            category_limit,
         )),
         is_recurring=product.is_subscription,
         recurring_interval=product.recurring_interval,
-        selected_options=obj_in.selected_options,
+        selected_options=variant.options,
         source=obj_in.source,
         line_net=0,
         line_tax=0,
@@ -339,13 +418,13 @@ async def update_line(db: AsyncSession, quotation: Quotation, line_id: uuid.UUID
     line = next((item for item in quotation.lines if item.id == line_id), None)
     if line is None:
         raise ValueError("Quotation line not found")
-    if line.product_id is None:
-        raise ValueError("Quotation line product is missing")
+    if line.variant_id is None:
+        raise ValueError("Quotation line variant is missing")
     quantity = obj_in.quantity if obj_in.quantity is not None else line.quantity
     if quantity != line.quantity or line.warehouse_id is None:
         warehouse_id, warehouse_name, warehouse_code, warehouse_bin_location, stock_available_at_entry = await _allocate_stock_line(
             db,
-            product_id=line.product_id,
+            variant_id=line.variant_id,
             quantity=quantity,
         )
         _apply_stock_snapshot(

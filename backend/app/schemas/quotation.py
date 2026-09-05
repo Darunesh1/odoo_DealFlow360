@@ -8,17 +8,19 @@ from app.models.catalog import ProductUnit, RecurringInterval
 from app.models.approval import ApprovalStatus, ApprovalTrigger
 from app.models.quotation import LineSource, QuotationStatus, RiskBand
 from app.schemas.approval import ApprovalRead
-from app.schemas.customer import CustomerRead, PriceListRef, CustomerTierRead
+from app.schemas.customer import CustomerRead, CustomerTierRead
 
 
 class QuotationLineBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     product_id: Optional[uuid.UUID] = None
-    category_id: Optional[uuid.UUID] = None
+    variant_id: Optional[uuid.UUID] = None
     warehouse_id: Optional[uuid.UUID] = None
     product_name: str
-    category_name: Optional[str] = None
+    variant_name: Optional[str] = None
+    sku: Optional[str] = None
+    category: Optional[str] = None
     warehouse_name: Optional[str] = None
     warehouse_code: Optional[str] = None
     warehouse_bin_location: Optional[str] = None
@@ -38,7 +40,7 @@ class QuotationLineBase(BaseModel):
     line_total: float = 0
     is_recurring: bool = False
     recurring_interval: Optional[RecurringInterval] = None
-    selected_options: List[dict] = Field(default_factory=list)
+    selected_options: dict = Field(default_factory=dict)
     source: LineSource = LineSource.MANUAL
     upsell_source_product_id: Optional[uuid.UUID] = None
 
@@ -53,17 +55,17 @@ class QuotationLineRead(QuotationLineBase):
 
 
 class QuotationLineCreate(BaseModel):
-    product_id: uuid.UUID
+    # The variant is what carries the SKU, the stock and the tier price, so it
+    # is what a line points at. The product falls out of it.
+    variant_id: uuid.UUID
     quantity: int = Field(ge=1)
     line_discount_percent: float = Field(default=0, ge=0, le=100)
-    selected_options: List[dict] = Field(default_factory=list)
     source: LineSource = LineSource.MANUAL
 
 
 class QuotationLineUpdate(BaseModel):
     quantity: Optional[int] = Field(default=None, ge=1)
     line_discount_percent: Optional[float] = Field(default=None, ge=0, le=100)
-    selected_options: Optional[List[dict]] = None
     source: Optional[LineSource] = None
 
 
@@ -77,7 +79,6 @@ class QuotationBase(BaseModel):
     owner_name: Optional[str] = None
     sales_team_id: Optional[uuid.UUID] = None
     status: QuotationStatus = QuotationStatus.DRAFT
-    price_list_id: Optional[uuid.UUID] = None
     currency: str = "USD"
     customer_tier_id: Optional[uuid.UUID] = None
     tier_max_discount_percent: Optional[float] = None
@@ -106,7 +107,6 @@ class QuotationRead(QuotationBase):
     created_at: datetime
     updated_at: datetime
     customer: CustomerRead
-    price_list: Optional[PriceListRef] = None
     customer_tier: Optional[CustomerTierRead] = None
     lines: List[QuotationLineRead] = Field(default_factory=list)
     approval: Optional[ApprovalRead] = None
@@ -114,7 +114,7 @@ class QuotationRead(QuotationBase):
 
 class QuotationCreate(BaseModel):
     customer_id: uuid.UUID
-    price_list_id: Optional[uuid.UUID] = None
+    currency: str = Field(default="USD", min_length=3, max_length=3)
     recipient_email: Optional[EmailStr] = None
     order_discount_percent: float = Field(default=0, ge=0, le=100)
     notes: Optional[str] = None
@@ -123,7 +123,6 @@ class QuotationCreate(BaseModel):
 
 
 class QuotationUpdate(BaseModel):
-    price_list_id: Optional[uuid.UUID] = None
     recipient_email: Optional[EmailStr] = None
     order_discount_percent: Optional[float] = Field(default=None, ge=0, le=100)
     notes: Optional[str] = None

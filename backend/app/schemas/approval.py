@@ -44,3 +44,29 @@ class ApprovalRead(BaseModel):
     submitted_at: datetime
     decided_at: Optional[datetime] = None
     steps: List[ApprovalStepRead] = Field(default_factory=list)
+
+
+class ApprovalRuleStepRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    step_order: int
+    role: Role
+
+
+class ApprovalRuleRead(BaseModel):
+    """One row of screen 18's routing panel.
+
+    Zero steps is "no approval needed" - not a special case, just an empty chain.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    name: str
+    min_score: float
+    max_score: Optional[float] = None
+    risk_band: RiskBand
+    sort_order: int
+    is_active: bool
+    steps: List[ApprovalRuleStepRead] = Field(default_factory=list)
