@@ -143,3 +143,79 @@ async def test_a_period_filter_excludes_older_sales(db_session):
         db_session, ReportFilters(date_to=date.today())
     )
     assert today["units_sold"] == 4
+
+
+async def test_a_nudged_alert_re_raises_when_the_deal_gets_worse(db_session):
+    """Nudging used to silence a (quotation, type) pair permanently."""
+    from app.models.catalog import Currency
+    from app.models.quotation import RiskBand
+
+    db_session.add(
+        Currency(code="USD", name="US Dollar", symbol="$", rate_to_base=1, is_base=True)
+    )
+    await db_session.commit()
+    quotation = await _stale_quotation(db_session, days=9)
+
+    assert await health_service.sweep(db_session) == 1
+    alert = (await health_service.list_alerts(db_session))[0]
+    assert alert.severity == RiskBand.MEDIUM
+
+    await health_service.act(
+        db_session, alert=alert, action=AlertStatus.NUDGED, note="chased"
+    )
+    await db_session.commit()
+
+    # Nothing has changed, so nothing new is raised.
+    assert await health_service.sweep(db_session) == 0
+
+    # But once it genuinely worsens, the milder flag must not keep it quiet.
+    quotation.last_activity_at = datetime.now(timezone.utc) - timedelta(days=40)
+    db_session.add(quotation)
+    await db_session.commit()
+
+    assert await health_service.sweep(db_session) == 1
+    open_alerts = await health_service.list_alerts(db_session)
+    assert [a.severity for a in open_alerts] == [RiskBand.HIGH]
+
+
+async def test_a_rep_dashboard_agrees_with_their_approvals_screen(db_session):
+    """The tile and the list it links to must be the same number."""
+    from app.models.approval import Approval, ApprovalStatus
+    from app.models.catalog import Currency
+    from app.models.quotation import RiskBand
+    from app.services import report_service
+    from tests.conftest import make_user
+
+    db_session.add(
+        Currency(code="USD", name="US Dollar", symbol="$", rate_to_base=1, is_base=True)
+    )
+    await db_session.commit()
+
+    mine = await _stale_quotation(db_session, days=1)
+    theirs = await _stale_quotation(db_session, days=1)
+
+    rep = await make_user(db_session, "rep-dash@example.com")
+    other = await make_user(db_session, "rep-other@example.com")
+    mine.owner_id = rep.id
+    theirs.owner_id = other.id
+    db_session.add_all([mine, theirs])
+
+    for quotation in (mine, theirs):
+        db_session.add(
+            Approval(
+                quotation_id=quotation.id,
+                round_number=1,
+                rule_name="Over limit",
+                risk_band=RiskBand.MEDIUM,
+                status=ApprovalStatus.PENDING,
+                submitted_by_name="Rep",
+                submitted_at=datetime.now(timezone.utc),
+            )
+        )
+    await db_session.commit()
+
+    data = await report_service.dashboard(db_session, rep)
+    # One each, so an unscoped count would say two.
+    assert data["awaiting_approval"] == 1
+    assert data["open_quotations"] == 1
+    assert data["role"] == "rep"

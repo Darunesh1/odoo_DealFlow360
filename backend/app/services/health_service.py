@@ -44,10 +44,16 @@ logger = logging.getLogger(__name__)
 
 # A deal untouched for this long is stalled.
 STALLED_DAYS = 7
+# How long resolving an alert buys quiet before the same problem may be raised
+# again. Its own knob: it used to reuse the stall window, so widening that to
+# thirty days also silenced resolved alerts for thirty.
+ALERT_QUIET_DAYS = 7
 # How far above their own average a rep's discount has to be to count.
 ANOMALY_MULTIPLE = 2.0
 # Below this, "twice the average" is noise - 2% versus 1% is not a story.
 ANOMALY_FLOOR_POINTS = 5.0
+# How far back a rep's own average looks.
+REP_AVERAGE_DAYS = 180
 # States where a deal can still stall. A confirmed order is not stalled, it is
 # done being negotiated.
 LIVE_STATES = {
@@ -61,15 +67,30 @@ def _stalled_days() -> int:
     return int(getattr(settings, "STALLED_DEAL_DAYS", STALLED_DAYS))
 
 
+_SEVERITY_ORDER = {
+    RiskBand.NONE: 0,
+    RiskBand.LOW: 1,
+    RiskBand.MEDIUM: 2,
+    RiskBand.HIGH: 3,
+}
+
+
 async def _suppressed(
-    db: AsyncSession, quotation_id: uuid.UUID, alert_type: AlertType
+    db: AsyncSession,
+    quotation_id: uuid.UUID,
+    alert_type: AlertType,
+    severity: RiskBand,
 ) -> bool:
     """Whether this alert should stay quiet.
 
-    Two reasons. One of the same kind is already open - re-raising it hourly
-    would bury the dashboard in duplicates. Or one was resolved recently: a
-    manager saying "I have dealt with this" should buy quiet for a while, but
-    not forever, because a deal that is still stalled a fortnight later is
+    An open alert of the same kind normally suppresses - re-raising hourly
+    would bury the dashboard in duplicates. But only while the situation has
+    not got worse: nudging an alert used to silence that pair for ever, so a
+    deal idle for nine days and then ninety went on showing the same MEDIUM
+    flag somebody had already waved at.
+
+    A resolved alert buys quiet for ALERT_QUIET_DAYS. Not for ever either: a
+    deal still stalled a fortnight after someone said they had dealt with it is
     genuinely worth raising again.
     """
     existing = (
@@ -82,9 +103,20 @@ async def _suppressed(
         )
     ).scalars().first()
     if existing is not None:
-        return True
+        worse = _SEVERITY_ORDER[severity] > _SEVERITY_ORDER[existing.severity]
+        if not worse:
+            return True
+        # It has escalated. Close the old one so the new one is not a duplicate
+        # of something that says something milder.
+        existing.status = AlertStatus.RESOLVED
+        existing.acted_at = datetime.now(timezone.utc)
+        existing.action_note = "Superseded - the deal got worse"
+        db.add(existing)
+        return False
 
-    quiet_until = datetime.now(timezone.utc) - timedelta(days=_stalled_days())
+    quiet_until = datetime.now(timezone.utc) - timedelta(
+        days=int(getattr(settings, "ALERT_QUIET_DAYS", ALERT_QUIET_DAYS))
+    )
     recently_resolved = (
         await db.execute(
             select(DealHealthAlert).where(
@@ -108,7 +140,7 @@ async def _raise(
     detail: str,
 ) -> bool:
     """Opens an alert unless one of the same kind is already open."""
-    if await _suppressed(db, quotation_id, alert_type):
+    if await _suppressed(db, quotation_id, alert_type, severity):
         return False
     db.add(
         DealHealthAlert(
@@ -131,10 +163,14 @@ async def rep_average_discount(db: AsyncSession, rep_id: uuid.UUID) -> Optional[
     """
 
     async def load() -> Optional[float]:
+        # Genuinely trailing. Without the window a rep's oldest deals weigh the
+        # same as last month's, so a changed selling style never shows up.
+        since = datetime.now(timezone.utc) - timedelta(days=REP_AVERAGE_DAYS)
         value = (
             await db.execute(
                 select(func.avg(SalesRecord.discount_percent)).where(
-                    SalesRecord.sales_rep_id == rep_id
+                    SalesRecord.sales_rep_id == rep_id,
+                    SalesRecord.sold_at >= since,
                 )
             )
         ).scalar_one_or_none()
@@ -185,12 +221,25 @@ async def sweep(db: AsyncSession) -> int:
                 and given >= ANOMALY_FLOOR_POINTS
                 and given >= average * ANOMALY_MULTIPLE
             ):
+                # Scaled, not always HIGH: twice the average and five times
+                # the average are not the same conversation.
+                ratio = given / average
+                severity = (
+                    RiskBand.HIGH
+                    if ratio >= ANOMALY_MULTIPLE * 1.5
+                    else RiskBand.MEDIUM
+                )
                 if await _raise(
                     db,
                     quotation_id=quotation.id,
                     alert_type=AlertType.DISCOUNT_ANOMALY,
-                    severity=RiskBand.HIGH,
-                    detail=f"Discount {given:.0f}% vs this rep's average {average:.0f}%",
+                    severity=severity,
+                    # One decimal place: ":.0f" rendered 12.4% vs 6.2% as
+                    # "12% vs 6%", which does not look like twice.
+                    detail=(
+                        f"Discount {given:.1f}% vs this rep's average "
+                        f"{average:.1f}%"
+                    ),
                 ):
                     raised += 1
 
@@ -297,4 +346,7 @@ async def act(
         reason=note or action.value,
         context={"alert_type": alert.alert_type.value},
     )
+    # Resolving one changes the at-risk tile, which otherwise stayed stale
+    # until the TTL expired or something unrelated bumped the namespace.
+    await cache.bump(cache.NS_DASHBOARD)
     return alert

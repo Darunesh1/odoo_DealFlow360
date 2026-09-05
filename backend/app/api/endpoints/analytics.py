@@ -52,11 +52,7 @@ async def read_dashboard(
 # Deal health
 # --------------------------------------------------------------------------- #
 
-async def _alert_row(db: AsyncSession, alert: DealHealthAlert) -> AlertRead:
-    quotation = await db.get(Quotation, alert.quotation_id)
-    customer = (
-        await db.get(Customer, quotation.customer_id) if quotation else None
-    )
+def _alert_row(alert: DealHealthAlert, quotation, customer) -> AlertRead:
     return AlertRead(
         id=alert.id,
         quotation_id=alert.quotation_id,
@@ -76,11 +72,31 @@ async def _alert_row(db: AsyncSession, alert: DealHealthAlert) -> AlertRead:
 @router.get("/alerts", response_model=List[AlertRead])
 async def read_alerts(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     status_filter: Optional[AlertStatus] = Query(default=None, alias="status"),
 ) -> Any:
-    """Screen 14's table. Resolved alerts are hidden unless asked for."""
-    alerts = await health_service.list_alerts(db, status=status_filter)
-    return [await _alert_row(db, alert) for alert in alerts]
+    """Screen 14's table. Resolved alerts are hidden unless asked for.
+
+    Scoped like every other list: a rep sees flags on their own deals, not
+    their colleagues' discount anomalies. Joined rather than fetched per row -
+    it was two queries per alert, so a hundred alerts meant two hundred and one.
+    """
+    stmt = (
+        select(DealHealthAlert, Quotation, Customer)
+        .join(Quotation, DealHealthAlert.quotation_id == Quotation.id)
+        .join(Customer, Quotation.customer_id == Customer.id)
+        .order_by(DealHealthAlert.flagged_at.desc())
+        .limit(200)
+    )
+    if status_filter is not None:
+        stmt = stmt.where(DealHealthAlert.status == status_filter)
+    else:
+        stmt = stmt.where(DealHealthAlert.status != AlertStatus.RESOLVED)
+    if not current_user.has_role(Role.ADMIN, Role.SALES_MANAGER, Role.FINANCE):
+        stmt = stmt.where(Quotation.owner_id == current_user.id)
+
+    rows = (await db.execute(stmt)).all()
+    return [_alert_row(alert, quotation, customer) for alert, quotation, customer in rows]
 
 
 @router.get("/alerts/counts", response_model=AlertCounts)
@@ -93,7 +109,11 @@ async def read_alert_counts(db: AsyncSession = Depends(get_db)) -> Any:
     )
 
 
-@router.post("/alerts/sweep", response_model=AlertCounts)
+@router.post(
+    "/alerts/sweep",
+    response_model=AlertCounts,
+    dependencies=[Depends(require_manager)],
+)
 async def run_sweep(db: AsyncSession = Depends(get_db)) -> Any:
     """Runs the detection now rather than waiting for the hourly schedule.
 
@@ -146,7 +166,9 @@ async def act_on_alert(
 
         await notify_alert_action(db, alert=alert, action=body.action.value)
 
-    return await _alert_row(db, alert)
+    quotation = await db.get(Quotation, alert.quotation_id)
+    customer = await db.get(Customer, quotation.customer_id) if quotation else None
+    return _alert_row(alert, quotation, customer)
 
 
 # --------------------------------------------------------------------------- #

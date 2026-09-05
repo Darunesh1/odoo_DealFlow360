@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     # deal health dashboard.
     STALLED_DEAL_DAYS: int = 7
 
+    # How long resolving a deal-health alert buys quiet before the same problem
+    # can be raised again. Its own knob rather than reusing the stall window,
+    # which would silence resolved alerts for as long as the stall threshold.
+    ALERT_QUIET_DAYS: int = 7
+
     # Upsell suggestions below this margin percentage are suppressed entirely
     # (spec A6's "minimum margin thresholds"). A rep should not have to judge
     # which suggestions are safe to accept.

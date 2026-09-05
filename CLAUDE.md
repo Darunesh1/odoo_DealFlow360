@@ -222,6 +222,18 @@ already-tier-adjusted `unit_price`, so a Gold quote starts at zero points over, 
 batch, naming the SKU, unless every row has `unit_cost > 0`, `base_price > 0`, and — for a
 non-subscription product — a quantity for every active warehouse.
 
+**A subscription's category is not typed, it is forced.** `catalog_service`
+coerces `category` to `"Subscription"` whenever `is_subscription` is true, refuses that name
+on a product whose toggle is off, and never suggests it in `list_categories`. The toggle is
+the single place subscription-ness is declared - the DB already pairs it with
+`recurring_interval` via a CHECK constraint, and this extends the same idea to the category.
+
+**A plan is capped, not stocked.** `ProductVariant.available_quantity` is how many licences
+may be sold in total; it is required before a subscription's matrix can be saved, and
+`_check_plan_capacity` refuses a line that would take the total past it, counting `ACTIVE`
+and `PAUSED` subscriptions. Per-warehouse quantities would be fiction - a plan has no depot.
+Physical variants leave it NULL and use `stock_items`.
+
 **Category is free text on the product; its ceiling is a separate table.** There is no categories
 table. `category_discount_limits` is keyed by category name, and **a category absent from it has no
 ceiling** — which is not the same as a ceiling of zero, or every uncapped line would flag the
@@ -314,6 +326,19 @@ customer's date when a backorder clears after it would be a promise already
 known to be false.
 
 ## The order lifecycle
+
+**Approval plans the split; Finance reserves.** The moment a quotation reaches `APPROVED` -
+by auto-approval, by the last approver in a chain, or by an accepted counter-offer -
+`order_service.plan_fulfillment` works out which warehouses would cover it, so the order
+appears under "Orders awaiting fulfillment" without anyone going looking. It deliberately
+does **not** reserve: accepting the split is Finance's decision and reserving here would make
+that click meaningless. `approval_service.plan_if_approved` swallows failures on purpose - a
+missing warehouse must not undo an approval that has already been decided and emailed.
+
+`confirm_quotation`'s idempotency keys on the **quotation's status**, not on whether a
+fulfillment exists. The old check would have returned early and silently skipped the sales
+history and the subscriptions once approval started creating fulfillments.
+
 
 One row carries a deal from start to finish: **a CONFIRMED quotation *is* the sales order.** The
 mockup uses one reference (Q-1042) for the quotation, its approval and its fulfillment, so a
@@ -414,11 +439,36 @@ work is written.
 
 ## Deal health
 
-`health_service.sweep` raises three kinds of alert, idempotent per `(quotation, alert_type)` while
-one is OPEN. A **discount anomaly** is measured against *that rep's own* trailing average from
-`sales_records`, not a company mean — a rep who habitually sells at 14% is not an outlier, and
-flagging them trains everyone to ignore the dashboard. Resolving an alert buys quiet for one stall
-window rather than forever, so a deal still stuck a fortnight later is raised again.
+`health_service.sweep` raises three kinds of alert. A **discount anomaly** is measured against
+*that rep's own* trailing average over the last `REP_AVERAGE_DAYS`, not a company mean — a rep who
+habitually sells at 14% is not an outlier, and flagging them trains everyone to ignore the
+dashboard.
+
+Suppression has two halves, and both are bounded. An open alert of the same kind silences a
+re-raise **only while the severity has not increased**: nudging one used to quiet that pair for
+ever, so a deal idle for nine days and then ninety kept showing the flag somebody had already waved
+at. When it worsens the old alert is superseded and a higher one takes its place. A resolved alert
+buys `ALERT_QUIET_DAYS` of silence - its own setting, because it used to reuse the stall window, so
+widening that to thirty days also muted resolved alerts for thirty.
+
+`POST /alerts/sweep` is a management action: it scans every live quotation and commits. `GET
+/alerts` is scoped like every other list, so a rep sees flags on their own deals rather than their
+colleagues' discount anomalies.
+
+## Dashboards have to agree with the screens they link to
+
+`report_service.dashboard(db, viewer)` is scoped by the same predicate the lists use, and its
+cache key carries the viewer (`home:{role}:{id}`) - a shared key would serve one person's
+scoped numbers to everyone. Tiles differ per role, and each is computed from the same query as
+the screen it links to.
+
+Two rules worth keeping: "waiting on me" uses `approval_service.can_act`, the inbox's own
+predicate, rather than a second definition of pending; and "at-risk deals" counts **distinct
+quotations**, because one deal carrying a stall and a slippage flag is one deal.
+
+The reports screen applies its filters to quote counts and approval time too, via
+`_apply_to_quotations` - they used to ignore every filter, making conversion rate a filtered
+numerator over an unfiltered denominator.
 
 ## Reporting
 
@@ -443,6 +493,10 @@ at all. Exports are built in memory (`export_service`) and streamed — no temp 
 | `billing.py` | reads: admin, finance, manager, rep | writes (payments, subscription changes) narrowed to **admin, finance** |
 | `analytics.py` | admin, sales_rep, sales_manager, finance | dashboard, alerts, reports; nudge/escalate narrowed to **admin, manager, finance** |
 | `portal.py` | **`Role.CUSTOMER` only** | the customer's own quotations, comments, counter-offers, confirm, invoices |
+
+A rep may also create a customer mid-quotation (`POST /customers`, name and email only) — the
+tier is not theirs to choose, and `sync_customer_portal_email` does the rest: the login, the
+link, the invite. Credit notes are listed by everyone and applied by Finance.
 
 Whose turn it is in an approval chain is a property of the loaded chain, not of the URL, so it is
 checked in `approval_service.decide` rather than by a router guard. A router-level guard could only
