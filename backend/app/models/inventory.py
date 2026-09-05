@@ -72,6 +72,7 @@ class StockItem(Base, TimestampMixin):
     bin_location: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     warehouse: Mapped["Warehouse"] = relationship(back_populates="stock")
+    product: Mapped["Product"] = relationship(lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("warehouse_id", "product_id", name="uq_stock_item"),

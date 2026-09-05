@@ -1,7 +1,7 @@
 """Products, variants, price lists and upsell pairings."""
 
 import enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 import uuid
 from sqlalchemy import (
     Boolean, CheckConstraint, Enum as SAEnum, ForeignKey, Index, Integer,
@@ -12,6 +12,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.models.base import MONEY, PERCENT, RATIO, TimestampMixin
+
+if TYPE_CHECKING:
+    from app.models.customer import CustomerTier
 
 
 class RecurringInterval(str, enum.Enum):
@@ -176,6 +179,7 @@ class PriceList(Base, TimestampMixin):
     adjustment_percent: Mapped[float] = mapped_column(PERCENT, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    tier: Mapped[Optional["CustomerTier"]] = relationship(lazy="selectin")
     items: Mapped[list["PriceListItem"]] = relationship(
         back_populates="price_list", cascade="all, delete-orphan", lazy="selectin"
     )
@@ -213,6 +217,7 @@ class PriceListItem(Base, TimestampMixin):
     unit_price: Mapped[float] = mapped_column(MONEY, nullable=False)
 
     price_list: Mapped["PriceList"] = relationship(back_populates="items")
+    product: Mapped["Product"] = relationship(lazy="selectin")
 
     __table_args__ = (
         UniqueConstraint("price_list_id", "product_id", name="uq_price_list_item"),
