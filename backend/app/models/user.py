@@ -76,6 +76,18 @@ class User(Base):
         String(255),
         nullable=True,
     )
+    # A portal login belongs to a buying company; internal staff belong to a
+    # sales team. Both nullable: an admin has neither.
+    customer_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("customers.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    sales_team_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("sales_teams.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     is_active: Mapped[bool] = mapped_column(
         Boolean,
         default=True,

@@ -80,10 +80,11 @@ async def init_db() -> None:
         logger.info("Dev environment detected: verifying database exists...")
         await create_database_if_not_exists()
 
-    # Import models here to register them with the Base metadata before table
-    # creation. UserRole must be imported too, or its table is silently skipped
-    # and every authenticated request fails on a missing relation.
-    from app.models.user import Role, User, UserRole  # noqa: F401
+    # Import every model here to register it with the Base metadata before
+    # table creation. A model that is not imported has its table SILENTLY
+    # skipped, surfacing much later as a missing-relation error at request
+    # time. The package __init__ imports all of them, so one line covers it.
+    import app.models  # noqa: F401
 
     logger.info("Initializing database tables...")
     async with engine.begin() as conn:
