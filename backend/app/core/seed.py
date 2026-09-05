@@ -42,7 +42,6 @@ async def seed_demo_data() -> None:
         CategoryLimitCreate,
         ProductCreate,
         VariantAttributeInput,
-        VariantPriceInput,
         VariantRowInput,
         WarehouseCreate,
     )
@@ -78,7 +77,9 @@ async def seed_demo_data() -> None:
             RecurringInterval.MONTHLY, [],
         ),
     ]
-    # SKU suffix -> (unit cost, Bronze USD price)
+    # The only two numbers per product. Every tier and currency price is
+    # derived from the base price by rebuild_variant_prices.
+    # name -> (unit cost, base price, both in the base currency)
     pricing = {
         "Laptop Pro 14": (850.0, 1200.0),
         "Docking Station": (110.0, 180.0),
@@ -87,8 +88,8 @@ async def seed_demo_data() -> None:
         "Care Plan 2yr": (18.0, 46.0),
     }
     warehouses = [
-        ("MAIN", "Main Warehouse", "Chennai, India", 50, 5, 1.0, 1),
-        ("EAST", "East Depot", "Ahmedabad, India", 40, 4, 1.1, 2),
+        ("MAIN", "Main Warehouse", "Chennai, India"),
+        ("EAST", "East Depot", "Ahmedabad, India"),
     ]
     customers = [
         ("Acme Corp", "Gold", "acme@dealflow360.com"),
@@ -136,18 +137,11 @@ async def seed_demo_data() -> None:
 
         # --- warehouses -------------------------------------------------------- #
         warehouse_by_code: dict[str, Warehouse] = {}
-        for code, name, address, base_cost, per_unit, weight, priority in warehouses:
+        for code, name, address in warehouses:
             warehouse = await catalog_service.get_warehouse_by_code(session, code)
             if warehouse is None:
                 warehouse = await catalog_service.create_warehouse(
-                    session,
-                    WarehouseCreate(
-                        code=code, name=name, address=address,
-                        shipping_base_cost=base_cost,
-                        shipping_cost_per_unit=per_unit,
-                        shipping_cost_weight=weight,
-                        split_priority=priority,
-                    ),
+                    session, WarehouseCreate(code=code, name=name, address=address)
                 )
             warehouse_by_code[code] = warehouse
 
@@ -174,20 +168,23 @@ async def seed_demo_data() -> None:
                     ],
                 ),
             )
-            unit_cost, bronze_price = pricing[name]
+            unit_cost, base_price = pricing[name]
+            # Anything that is not a subscription is stock-tracked, so it needs
+            # a quantity per warehouse - the same rule the matrix enforces.
+            stocked = interval is None
             rows = []
             for index, variant in enumerate(product.variants):
                 # Laptop Pro 14 is deliberately short at Main so the warehouse
                 # split demo has something to split.
                 main_qty = 3 if name == "Laptop Pro 14" else 40
                 east_qty = 8 if name == "Laptop Pro 14" else 25
-                # Services and subscriptions are not stock-tracked at all.
-                stocked = category == "Hardware"
                 rows.append(
                     VariantRowInput(
                         id=variant.id,
                         sku=variant.sku,
-                        unit_cost=unit_cost,
+                        # Higher-specced combinations cost and sell for more.
+                        unit_cost=round(unit_cost * (1 + index * 0.05), 2),
+                        base_price=round(base_price * (1 + index * 0.05), 2),
                         stock=(
                             [
                                 {
@@ -202,23 +199,6 @@ async def seed_demo_data() -> None:
                             if stocked
                             else []
                         ),
-                        prices=[
-                            # One entered cell per tier; the service fans the
-                            # other currency out from the FX rate. Higher tiers
-                            # get the better price.
-                            VariantPriceInput(
-                                tier_id=tier_by_name[tier_name].id,
-                                currency_code="USD",
-                                unit_price=round(
-                                    (bronze_price + index * 30)
-                                    * (1 - discount / 100),
-                                    2,
-                                ),
-                            )
-                            for tier_name, discount in (
-                                ("Bronze", 0), ("Silver", 5), ("Gold", 10)
-                            )
-                        ],
                     )
                 )
             await variant_service.save_variant_matrix(session, product, rows)
