@@ -5,9 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project state
 
 This repo was generated from a full-stack web template and is being built out as
-**DealFlow360**. The template's auth, email, admin and background-job machinery is complete and
-working; **the domain layer is not written yet** — there are no deal/pipeline models, routes or
-screens. `DealFlow360.pdf` at the repo root is the (untracked) spec.
+**DealFlow360**. Auth and roles are done, the full 37-table domain schema exists, the Admin
+Management area (products, variants, pricing, discount ceilings, warehouses, recurring plans) is
+built, and a rep can build and submit a quotation that routes for approval.
+
+**Still unbuilt:** approval decisions (mockup screens 5–6), fulfillment splitting (7–8),
+subscriptions and invoicing (9–10, 12–13), the customer portal (11), deal health (14), reporting
+(15), the upsell panel and the pipeline Kanban. The dashboard is still template copy.
+`DealFlow360.docx` and the excalidraw mockup at the repo root are the (untracked) spec.
 
 Branding is done: the app name lives in `frontend/src/config.ts` (`APP_NAME`), the logo is
 `DealFlowMark` in `components/brand.tsx`, and the FastAPI title is set in `app/main.py`. The
@@ -39,7 +44,7 @@ There is **no public signup**. `POST /auth/register` does not exist: an Admin cr
 via `POST /admin/users` and the invitee sets their own password from an emailed link
 (`POST /auth/accept-invite`). Startup seeds `admin@dealflow360.com` / `admin12345`, plus one
 demo account per role in development (`rep@`, `manager@`, `finance@`, `customer@`, same
-password) — see `backend/app/core/seed.py`.
+password) — see `backend/app/core/seed.py`, which also seeds the whole demo catalog.
 
 **`make test` shares `backend_db` with the dev server and truncates `users` after every test**,
 so a test run wipes the seeded accounts. Restart the API (or touch a file, with `--reload`) to
@@ -160,3 +165,86 @@ a string for `HTTPException` but a list of `{msg, loc}` objects for 422 validati
 - **No rate limiting** on login or password reset. Redis is already wired if you add it.
 - Access tokens are 15 minutes, refresh 7 days (`ACCESS_TOKEN_EXPIRE_MINUTES`,
   `REFRESH_TOKEN_EXPIRE_DAYS`).
+
+
+## The catalog, and why it is shaped this way
+
+**Every product owns at least one variant.** A product with `has_variants = false` gets a single
+hidden `Default` row. SKU, per-warehouse stock and tier prices therefore hang off exactly one
+place — `product_variants` — and pricing, stock and quotation-line code has one path, not two.
+`stock_items` and `quotation_lines.variant_id` both key on the variant, never the product.
+
+**Generate Variants is idempotent.** `product_variants.options` stores the combination as JSONB
+(`{"Color": "Black", "RAM": "8GB"}`), and `variant_service.generate_variants` matches existing rows
+on that payload. Regenerating after the admin adds a value inserts only the new combinations, so
+SKUs, quantities and prices already typed into the matrix survive.
+
+**Prices are stored per currency, not converted on read.** `variant_prices` holds one row per
+`(variant, tier, currency)`. The admin types one currency per tier; `pricing_service` fans the rest
+out from `currencies.rate_to_base` and flags the typed cell with `is_entered`. Changing a rate
+re-derives only the non-entered cells — a rate correction must never rewrite a price someone typed,
+nor silently move a price a customer was already quoted.
+
+**Category is free text on the product; its ceiling is a separate table.** There is no categories
+table. `category_discount_limits` is keyed by category name, and **a category absent from it has no
+ceiling** — which is not the same as a ceiling of zero, or every uncapped line would flag the
+instant anyone discounted it. `customer_tiers` has no `code` and no `sort_order`: the name is the
+natural key and listings order by `max_discount_percent`.
+
+**Archived is not deleted.** `products.status` is `active` / `archived`. Archived products are
+absent from `/lookups/products`, and `add_line` re-checks the status server-side rather than
+trusting the picker. Hard delete is refused (409) once a product appears on any quotation line.
+
+Deletes that are refused rather than cascaded, all returning **409** with a detail naming the
+blocker: a tier with customers or quotations on it, a currency with prices or quotations in it, a
+warehouse holding stock or backing a quoted line, a product on a quotation line.
+
+## Two SQLAlchemy traps this codebase has already hit
+
+- **`populate_existing=True` on `_load_quotation`** (`services/quotation_service.py`). With
+  `expire_on_commit=False`, re-querying an object already in the identity map returns it with its
+  *previously loaded* collections. Without this, the recalculate straight after `add_line` totalled
+  the old set of lines and reported the wrong risk band to the screen.
+- **Numeric columns come back as `Decimal`.** Anything read off a persisted row must be `float()`ed
+  before it meets a schema float or another Python float, or you get
+  `unsupported operand type(s) for +: 'float' and 'decimal.Decimal'` at runtime.
+
+## Discount governance
+
+`recalculate_quotation` measures each line against the **stricter of** its customer tier ceiling and
+its category ceiling, snapshotting both onto the line. The blended score follows spec §10:
+
+```
+worst    = max(over_by_points)
+weighted = Σ(over_by_points × line_net) / Σ(line_net)    # revenue-weighted, not per-unit
+score    = min(100, 8 × worst + 5 × weighted)
+```
+
+Bands: 0 → `none`, <15 → `low`, <45 → `medium`, else `high`. Routing, which
+`_approval_roles_for_band` is the last hardcoded copy of (the next phase reads `approval_rules`):
+
+| Situation | Chain |
+|---|---|
+| Every line within its ceiling | No approval — a rule with **zero steps**, still written as a real `approvals` row so an auto-approved quote appears in the list |
+| Over a ceiling, low or medium | **Sales Manager** |
+| Over a ceiling, high | **Sales Manager**, then **Finance** |
+
+**A Sales Rep is never an approver, and Admin is never an approval step.**
+
+## Line entry does not gate on stock
+
+`_allocate_stock_line` records the likeliest source warehouse and the *total* available, and
+**never refuses a short line**. An order no single warehouse can cover is exactly what the
+warehouse-split feature exists for, and backordering is a first-class state; refusing at entry would
+make both unreachable, and would also block services and subscriptions, which carry no stock rows at
+all.
+
+## Admin Management
+
+Five tabs under `/app/admin`, admin-only at the parent route
+(`frontend/src/pages/admin/management/`): Products (mockup screen 16) → product detail (17),
+Price Lists (currencies + a read-only price matrix), Discount Tiers (18), Warehouses, Subscription
+Plans. Users stays its own sidebar entry at `/app/admin/users`.
+
+All price editing happens on the product form. The Price Lists tab is deliberately read-only so
+there is only ever one place a price comes from.
