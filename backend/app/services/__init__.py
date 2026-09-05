@@ -8,6 +8,7 @@ from app.services.user_service import (
     get_user_by_id,
     list_users,
     normalize_email,
+    register_customer,
     set_password,
     set_verification_status,
     update_user,

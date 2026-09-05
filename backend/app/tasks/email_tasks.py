@@ -194,3 +194,42 @@ def send_customer_portal_email(
         accent="#0F766E",
     )
     return send_email(email, f"Quotation {quotation_number} is ready", html)
+
+
+@celery_app.task(name="app.tasks.email_tasks.send_sign_in_alert_email")
+def send_sign_in_alert_email(
+    email: str,
+    full_name: str = "",
+    when: str = "",
+    ip_address: str = "",
+    user_agent: str = "",
+) -> str:
+    """Tells a portal customer their account was just signed into.
+
+    Sent to customers only. Internal staff sign in dozens of times a day and
+    an alert per login would train everyone to ignore the one that matters.
+    """
+    details = "".join(
+        f"<tr><td style='padding:4px 12px 4px 0;color:#6B7280'>{label}</td>"
+        f"<td style='padding:4px 0'><strong>{value}</strong></td></tr>"
+        for label, value in (
+            ("When", when),
+            ("From", ip_address),
+            ("Device", user_agent[:120] if user_agent else ""),
+        )
+        if value
+    )
+    html = render_email(
+        heading="New sign-in to your account",
+        body_html=(
+            f"<p>Hi {full_name or 'there'},</p>"
+            "<p>Your account was just signed into. If this was you, there is "
+            "nothing to do.</p>"
+            f"<table style='font-size:14px;margin:16px 0'>{details}</table>"
+            "<p>If it was not you, change your password now.</p>"
+        ),
+        button_label="Review your account",
+        button_url=f"{settings.FRONTEND_URL}/portal",
+        accent="#B45309",
+    )
+    return send_email(email, f"New sign-in to your {settings.EMAILS_FROM_NAME} account", html)

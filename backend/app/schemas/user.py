@@ -52,6 +52,24 @@ class UserInvite(BaseModel):
     roles: Roles
 
 
+class CustomerRegister(BaseModel):
+    """Public sign-up.
+
+    There is deliberately no `roles` field. Self-registration produces a
+    customer and nothing else, and that is enforced by this schema boundary
+    rather than by a runtime check - exactly as UserUpdateMe's missing `roles`
+    is what stops PATCH /users/me being a privilege-escalation route.
+    """
+
+    full_name: str = Field(min_length=1, max_length=255)
+    email: EmailStr
+    password: Password
+    # Optional: a company signs up under its own name, an individual under
+    # theirs. Either way one customer record is created and the login is
+    # attached to it.
+    company_name: Optional[str] = Field(default=None, max_length=255)
+
+
 class InviteAccept(BaseModel):
     """Payload an invitee submits to set their first password."""
 

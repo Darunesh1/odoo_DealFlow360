@@ -70,6 +70,61 @@ async def create_invited_user(
     return db_user
 
 
+async def register_customer(
+    db: AsyncSession, *, full_name: str, email: str, password: str, company_name=None
+) -> User:
+    """Creates a portal login and the customer record behind it.
+
+    Quotations belong to a *customer*, not to a login, so a self-registered
+    user needs both: the company (or the individual, under their own name) and
+    the account attached to it. The tier is the lowest ceiling on offer -
+    nobody talks their way into Gold pricing by filling in a form; a rep or
+    admin promotes them later.
+
+    Roles come from here, never from the request. The schema has no `roles`
+    field to carry one.
+    """
+    from app.models.customer import Customer, CustomerTier
+
+    address = normalize_email(email)
+
+    tier = (
+        await db.execute(
+            select(CustomerTier)
+            .where(CustomerTier.is_active.is_(True))
+            .order_by(CustomerTier.max_discount_percent.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if tier is None:
+        raise ValueError("No customer tier is configured; an admin must add one first")
+
+    customer = Customer(
+        name=(company_name or full_name).strip(),
+        tier_id=tier.id,
+        contact_email=address,
+        is_active=True,
+    )
+    db.add(customer)
+    await db.flush()
+
+    db_user = User(
+        email=address,
+        hashed_password=hash_password(password),
+        full_name=full_name.strip(),
+        customer_id=customer.id,
+        is_active=True,
+        # Unverified until they follow the emailed link, exactly like an
+        # address change on an existing account.
+        is_verified=False,
+        role_links=[UserRole(role=Role.CUSTOMER)],
+    )
+    db.add(db_user)
+    await db.commit()
+    await db.refresh(db_user)
+    return db_user
+
+
 async def accept_invite(db: AsyncSession, db_obj: User, new_password: str) -> User:
     """Sets the first password on an invited account and marks it verified."""
     db_obj.hashed_password = hash_password(new_password)

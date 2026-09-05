@@ -29,10 +29,7 @@ app.core.database.async_session_maker = async_sessionmaker(
 )
 
 
-@pytest.fixture(autouse=True)
-async def clean_state() -> AsyncGenerator[None, None]:
-    """Clears users and the Redis token deny list between tests."""
-    yield
+async def _truncate_everything() -> None:
     async with app.core.database.async_session_maker() as session:
         # Driven off the metadata rather than a hand-maintained list: with
         # thirty-odd tables, listing them in FK order is a trap that only bites
@@ -46,6 +43,20 @@ async def clean_state() -> AsyncGenerator[None, None]:
         await get_redis_client().flushdb()
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+async def clean_state() -> AsyncGenerator[None, None]:
+    """Empties the database and the Redis keyspace around every test.
+
+    Before as well as after. This database is shared with the dev server, so
+    cleaning only on the way out leaves the FIRST test of a run looking at
+    whatever the startup seeder wrote - which makes a suite pass or fail
+    depending on whether you happened to run `make api` beforehand.
+    """
+    await _truncate_everything()
+    yield
+    await _truncate_everything()
 
 
 @pytest.fixture
