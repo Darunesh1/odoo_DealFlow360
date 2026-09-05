@@ -24,7 +24,19 @@ const ResetPasswordPage = lazy(() => import("@/pages/auth/reset-password"));
 const VerifyEmailPage = lazy(() => import("@/pages/auth/verify-email"));
 const DashboardPage = lazy(() => import("@/pages/app/dashboard"));
 const QuotationsPage = lazy(() => import("@/pages/app/quotations"));
-const CatalogPage = lazy(() => import("@/pages/admin/catalog"));
+const AdminManagementLayout = lazy(() => import("@/pages/admin/management/layout"));
+const AdminProductsPage = lazy(() => import("@/pages/admin/management/products"));
+const AdminProductDetailPage = lazy(
+  () => import("@/pages/admin/management/product-detail")
+);
+const AdminPriceListsPage = lazy(() => import("@/pages/admin/management/price-lists"));
+const AdminDiscountTiersPage = lazy(
+  () => import("@/pages/admin/management/discount-tiers")
+);
+const AdminWarehousesPage = lazy(() => import("@/pages/admin/management/warehouses"));
+const AdminSubscriptionPlansPage = lazy(
+  () => import("@/pages/admin/management/subscription-plans")
+);
 const ProfilePage = lazy(() => import("@/pages/app/profile"));
 const SettingsPage = lazy(() => import("@/pages/app/settings"));
 const AdminUsersPage = lazy(() => import("@/pages/admin/users"));
@@ -89,14 +101,28 @@ export default function App() {
               />
               <Route path="profile" element={<ProfilePage />} />
               <Route path="settings" element={<SettingsPage />} />
+              {/* Admin Management: one tabbed area, admin-only at the parent
+                  so no child route can be reached without the role. */}
               <Route
-                path="admin/catalog"
+                path="admin"
                 element={
                   <RequireAdmin>
-                    <CatalogPage />
+                    <AdminManagementLayout />
                   </RequireAdmin>
                 }
-              />
+              >
+                <Route index element={<Navigate to="/app/admin/products" replace />} />
+                <Route path="products" element={<AdminProductsPage />} />
+                <Route path="products/new" element={<AdminProductDetailPage />} />
+                <Route path="products/:productId" element={<AdminProductDetailPage />} />
+                <Route path="price-lists" element={<AdminPriceListsPage />} />
+                <Route path="discount-tiers" element={<AdminDiscountTiersPage />} />
+                <Route path="warehouses" element={<AdminWarehousesPage />} />
+                <Route
+                  path="subscription-plans"
+                  element={<AdminSubscriptionPlansPage />}
+                />
+              </Route>
               <Route
                 path="admin/users"
                 element={

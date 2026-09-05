@@ -31,6 +31,7 @@ interface NavItem {
   title: string
   url: string
   icon: ComponentType<{ className?: string }>
+  excludes?: string[]
   /** Match nested routes too, rather than only the exact path. */
   nested?: boolean
 }
@@ -41,7 +42,15 @@ const PLATFORM: NavItem[] = [
 ]
 
 const ADMINISTRATION: NavItem[] = [
-  { title: "Catalog", url: "/app/admin/catalog", icon: PackageIcon, nested: true },
+  {
+    title: "Admin Management",
+    url: "/app/admin",
+    icon: PackageIcon,
+    nested: true,
+    // Users lives under /app/admin too, but is its own entry: without this
+    // both rows would highlight at once.
+    excludes: ["/app/admin/users"],
+  },
   { title: "Users", url: "/app/admin/users", icon: UsersIcon, nested: true },
 ]
 
@@ -51,7 +60,10 @@ export function AppSidebar() {
   const canSeeSales = hasRole("admin", "sales_rep", "sales_manager")
 
   const isActive = (item: NavItem) =>
-    item.nested ? pathname.startsWith(item.url) : pathname === item.url
+    item.nested
+      ? pathname.startsWith(item.url) &&
+        !(item.excludes ?? []).some((path) => pathname.startsWith(path))
+      : pathname === item.url
 
   const renderGroup = (label: string, items: NavItem[]) => (
     <SidebarGroup>
