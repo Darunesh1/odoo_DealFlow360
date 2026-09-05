@@ -9,7 +9,8 @@ import app.core.database
 from app.core.config import settings
 from app.core.redis import get_redis_client
 from app.main import app as fastapi_app
-from app.models.user import User
+from app.core.security import hash_password
+from app.models.user import Role, User, UserRole
 
 # API routes live under the versioned prefix; tests build URLs from it so a
 # prefix change never means editing every test.
@@ -34,6 +35,9 @@ async def clean_state() -> AsyncGenerator[None, None]:
     yield
     async with app.core.database.async_session_maker() as session:
         try:
+            # Roles first: the FK cascade would cover it, but being explicit
+            # keeps this working if ondelete ever changes.
+            await session.execute(delete(UserRole))
             await session.execute(delete(User))
             await session.commit()
         except Exception:
@@ -64,7 +68,12 @@ def mock_emails(monkeypatch):
     """Captures Celery email dispatches instead of queueing them on the broker."""
     from app.tasks import email_tasks
 
-    calls = {"verification_emails": [], "welcome_emails": [], "reset_emails": []}
+    calls = {
+        "verification_emails": [],
+        "welcome_emails": [],
+        "reset_emails": [],
+        "invite_emails": [],
+    }
 
     def recorder(bucket):
         def _delay(*args, **kwargs):
@@ -82,29 +91,37 @@ def mock_emails(monkeypatch):
     monkeypatch.setattr(
         email_tasks.send_password_reset_email, "delay", recorder("reset_emails")
     )
+    monkeypatch.setattr(
+        email_tasks.send_invite_email, "delay", recorder("invite_emails")
+    )
 
     return calls
 
 
-async def register_user(
-    client: AsyncClient, email: str, password: str = "password123", full_name: str = "Test User"
-) -> dict:
-    """Registers a user and returns the created record."""
-    response = await client.post(
-        f"{API}/auth/register",
-        json={"email": email, "password": password, "full_name": full_name},
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
+async def make_user(
+    db_session: AsyncSession,
+    email: str,
+    password: str = "password123",
+    full_name: str = "Test User",
+    roles: tuple[Role, ...] = (Role.SALES_REP,),
+    is_verified: bool = True,
+) -> User:
+    """Creates a ready-to-sign-in user straight in the database.
 
-
-async def verify_latest_user(client: AsyncClient, mock_emails: dict, index: int = -1) -> None:
-    """Completes email verification using the most recently captured token."""
-    _, kwargs = mock_emails["verification_emails"][index]
-    response = await client.post(
-        f"{API}/auth/verify-email", json={"token": kwargs["token"]}
+    Accounts are created by an administrator now, so there is no public route
+    a test could register through.
+    """
+    user = User(
+        email=email,
+        hashed_password=hash_password(password),
+        full_name=full_name,
+        is_active=True,
+        is_verified=is_verified,
+        role_links=[UserRole(role=role) for role in roles],
     )
-    assert response.status_code == 200, response.text
+    db_session.add(user)
+    await db_session.commit()
+    return user
 
 
 async def login(client: AsyncClient, email: str, password: str = "password123") -> dict:
@@ -122,12 +139,22 @@ async def auth_headers(client: AsyncClient, email: str, password: str = "passwor
     return {"Authorization": f"Bearer {tokens['access_token']}"}
 
 
-async def promote_to_superuser(db_session: AsyncSession, email: str) -> None:
-    """Flips the superuser flag directly in the database, bypassing the API."""
+async def grant_roles(db_session: AsyncSession, email: str, *roles: Role) -> None:
+    """Adds roles to an existing user, bypassing the API."""
     from app.services import get_user_by_email
 
     user = await get_user_by_email(db_session, email=email)
     assert user is not None
-    user.is_superuser = True
+    for role in roles:
+        if role not in user.roles:
+            user.role_links.append(UserRole(role=role))
     db_session.add(user)
     await db_session.commit()
+
+
+async def admin_headers(
+    client: AsyncClient, db_session: AsyncSession, email: str = "admin@example.com"
+) -> dict:
+    """Creates an administrator and returns their Authorization header."""
+    await make_user(db_session, email, full_name="Admin", roles=(Role.ADMIN,))
+    return await auth_headers(client, email)

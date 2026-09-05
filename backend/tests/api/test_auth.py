@@ -3,64 +3,27 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
-from tests.conftest import API, auth_headers, login, register_user, verify_latest_user
+from tests.conftest import API, auth_headers, login, make_user
 
 
-async def test_register_user_success(
-    client: AsyncClient, db_session: AsyncSession, mock_emails
-):
-    data = await register_user(client, "newuser@example.com", full_name="New User")
 
-    assert data["email"] == "newuser@example.com"
-    assert data["full_name"] == "New User"
-    assert data["is_active"] is True
-    assert data["is_verified"] is False
-    assert "id" in data
-
-    result = await db_session.execute(
-        select(User).where(User.email == "newuser@example.com")
-    )
-    user = result.scalar_one_or_none()
-    assert user is not None
-    assert user.is_verified is False
-
-    assert len(mock_emails["verification_emails"]) == 1
-    _, kwargs = mock_emails["verification_emails"][0]
-    assert kwargs["email"] == "newuser@example.com"
-    assert "token" in kwargs
-
-
-async def test_register_rejects_weak_password(client: AsyncClient, mock_emails):
-    response = await client.post(
-        f"{API}/auth/register",
-        json={"email": "weak@example.com", "password": "short1", "full_name": "Weak"},
-    )
-    assert response.status_code == 422
-
-    response = await client.post(
-        f"{API}/auth/register",
-        json={"email": "weak@example.com", "password": "alllettersonly", "full_name": "Weak"},
-    )
-    assert response.status_code == 422
-
-
-async def test_register_user_duplicate_email(client: AsyncClient, mock_emails):
-    await register_user(client, "duplicate@example.com")
-
-    response = await client.post(
-        f"{API}/auth/register",
-        json={"email": "duplicate@example.com", "password": "password123"},
-    )
-    assert response.status_code == 400
-    assert response.json()["detail"] == "A user with this email already exists in the system."
 
 
 async def test_verify_email_success(
     client: AsyncClient, db_session: AsyncSession, mock_emails
 ):
-    await register_user(client, "verify@example.com", full_name="Verify Me")
-    await verify_latest_user(client, mock_emails)
+    """An unverified account is verified by the token from its email."""
+    await make_user(db_session, "verify@example.com", full_name="Verify Me", is_verified=False)
 
+    await client.post(f"{API}/auth/resend-verification", json={"email": "verify@example.com"})
+    _, kwargs = mock_emails["verification_emails"][-1]
+
+    response = await client.post(f"{API}/auth/verify-email", json={"token": kwargs["token"]})
+    assert response.status_code == 200
+
+    # The session maker sets expire_on_commit=False, so this session would
+    # otherwise hand back its own cached copy from before the API's write.
+    db_session.expire_all()
     result = await db_session.execute(
         select(User).where(User.email == "verify@example.com")
     )
@@ -73,8 +36,8 @@ async def test_verify_email_success(
     assert welcome_kwargs["email"] == "verify@example.com"
 
 
-async def test_verify_email_rejects_wrong_token_type(client: AsyncClient, mock_emails):
-    await register_user(client, "typemix@example.com")
+async def test_verify_email_rejects_wrong_token_type(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "typemix@example.com")
     tokens = await login(client, "typemix@example.com")
 
     # An access token must not be accepted as a verification token.
@@ -86,9 +49,8 @@ async def test_verify_email_rejects_wrong_token_type(client: AsyncClient, mock_e
 
 
 async def test_resend_verification_is_not_an_account_oracle(
-    client: AsyncClient, mock_emails
-):
-    await register_user(client, "resend@example.com")
+    client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "resend@example.com", is_verified=False)
     mock_emails["verification_emails"].clear()
 
     known = await client.post(
@@ -104,9 +66,8 @@ async def test_resend_verification_is_not_an_account_oracle(
     assert len(mock_emails["verification_emails"]) == 1
 
 
-async def test_login_success(client: AsyncClient, mock_emails):
-    await register_user(client, "loginuser@example.com")
-    await verify_latest_user(client, mock_emails)
+async def test_login_success(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "loginuser@example.com")
 
     tokens = await login(client, "loginuser@example.com")
     assert "access_token" in tokens
@@ -124,9 +85,8 @@ async def test_login_failure(client: AsyncClient):
 
 
 async def test_refresh_token_rotates_and_revokes_the_old_token(
-    client: AsyncClient, mock_emails
-):
-    await register_user(client, "refresh@example.com")
+    client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "refresh@example.com")
     tokens = await login(client, "refresh@example.com")
 
     response = await client.post(
@@ -144,8 +104,8 @@ async def test_refresh_token_rotates_and_revokes_the_old_token(
     assert replay.json()["detail"] == "Refresh token has been revoked"
 
 
-async def test_refresh_rejects_an_access_token(client: AsyncClient, mock_emails):
-    await register_user(client, "wrongtype@example.com")
+async def test_refresh_rejects_an_access_token(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "wrongtype@example.com")
     tokens = await login(client, "wrongtype@example.com")
 
     response = await client.post(
@@ -155,8 +115,8 @@ async def test_refresh_rejects_an_access_token(client: AsyncClient, mock_emails)
     assert response.json()["detail"] == "Invalid token type, refresh token required"
 
 
-async def test_logout_revokes_the_refresh_token(client: AsyncClient, mock_emails):
-    await register_user(client, "logout@example.com")
+async def test_logout_revokes_the_refresh_token(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "logout@example.com")
     tokens = await login(client, "logout@example.com")
 
     response = await client.post(
@@ -170,8 +130,8 @@ async def test_logout_revokes_the_refresh_token(client: AsyncClient, mock_emails
     assert replay.status_code == 401
 
 
-async def test_forgot_password_is_not_an_account_oracle(client: AsyncClient, mock_emails):
-    await register_user(client, "forgot@example.com")
+async def test_forgot_password_is_not_an_account_oracle(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "forgot@example.com")
 
     known = await client.post(
         f"{API}/auth/forgot-password", json={"email": "forgot@example.com"}
@@ -185,8 +145,8 @@ async def test_forgot_password_is_not_an_account_oracle(client: AsyncClient, moc
     assert len(mock_emails["reset_emails"]) == 1
 
 
-async def test_password_reset_flow(client: AsyncClient, mock_emails):
-    await register_user(client, "reset@example.com")
+async def test_password_reset_flow(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "reset@example.com")
     await client.post(f"{API}/auth/forgot-password", json={"email": "reset@example.com"})
 
     _, kwargs = mock_emails["reset_emails"][0]
@@ -205,8 +165,8 @@ async def test_password_reset_flow(client: AsyncClient, mock_emails):
     await login(client, "reset@example.com", "brandnewpass1")
 
 
-async def test_change_password_requires_the_current_one(client: AsyncClient, mock_emails):
-    await register_user(client, "change@example.com")
+async def test_change_password_requires_the_current_one(client: AsyncClient, mock_emails, db_session: AsyncSession):
+    await make_user(db_session, "change@example.com")
     headers = await auth_headers(client, "change@example.com")
 
     wrong = await client.post(
