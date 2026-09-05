@@ -52,14 +52,15 @@ there is **no dev proxy** — the browser calls the API cross-origin and CORS is
 Two variables have to agree:
 
 - `backend/.env` → `BACKEND_CORS_ORIGINS=http://localhost:5173,http://localhost:4173`
-- `frontend/.env` → `VITE_API_URL=http://localhost:8000/api/v1`
+- `frontend/.env` → `VITE_API_URL=http://localhost:8000/api`
 
 `allow_credentials=True` means a wildcard origin is rejected by browsers; origins must be listed
 explicitly. Change a port or host on either side and both files need editing.
 
-`VITE_API_URL` already includes `/api/v1`, so every frontend call is written **relative to the
-version prefix** (`api.post("/auth/login")`). The health probes are deliberately mounted at the
-root (`/health`, `/health/ready`), outside the prefix, so orchestrators need not know the version.
+`VITE_API_URL` already includes `/api`, so every frontend call is written **relative to that
+prefix** (`api.post("/auth/login")`). The API is deliberately unversioned: one frontend ships
+with this backend, so there is no external client to keep a `/v1` alive for. The health probes
+sit at the root (`/health`, `/health/ready`), outside the prefix, for orchestrators.
 
 ### Auth token flow
 

@@ -13,7 +13,7 @@ from app.schemas.token import TokenPayload
 from app.services import get_user_by_id
 
 # OAuth2 scheme config (points at the absolute login route path)
-reusable_oauth2 = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_PREFIX}/auth/login")
+reusable_oauth2 = OAuth2PasswordBearer(tokenUrl=f"{settings.API_PREFIX}/auth/login")
 
 CREDENTIALS_ERROR = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,

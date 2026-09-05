@@ -14,7 +14,7 @@ from app.models.user import Role, User, UserRole
 
 # API routes live under the versioned prefix; tests build URLs from it so a
 # prefix change never means editing every test.
-API = settings.API_V1_PREFIX
+API = settings.API_PREFIX
 
 # Override the database engine and session maker with NullPool to prevent connection reuse across pytest loops.
 app.core.database.engine = create_async_engine(

@@ -95,7 +95,7 @@ BACKEND_CORS_ORIGINS=http://localhost:5173,http://localhost:4173
 
 ```ini
 # frontend/.env — where the API lives
-VITE_API_URL=http://localhost:8000/api/v1
+VITE_API_URL=http://localhost:8000/api
 ```
 
 If you move either side to a different port or host, change both. A wildcard origin is not
@@ -115,10 +115,10 @@ usable here: the API sends credentials, and browsers reject `*` in that case.
 
 ## API
 
-Everything lives under `/api/v1`. Health probes sit at the root so orchestrators can reach
-them without knowing the version.
+Everything lives under `/api`. Health probes sit at the root so orchestrators can reach them
+without knowing the prefix.
 
-### Authentication — `/api/v1/auth`
+### Authentication — `/api/auth`
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -132,7 +132,7 @@ them without knowing the version.
 | `POST` | `/reset-password` | Complete a reset using the emailed token |
 | `POST` | `/change-password` | Change your password, re-checking the current one |
 
-### Your own account — `/api/v1/users`
+### Your own account — `/api/users`
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -143,7 +143,7 @@ them without knowing the version.
 `PATCH /me` accepts **only** `email` and `full_name`. Role and status fields are not part of
 its schema, so this route cannot be used to grant yourself privileges.
 
-### Administration — `/api/v1/admin`
+### Administration — `/api/admin`
 
 Superusers only; everyone else gets a `403`.
 

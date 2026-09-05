@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     )
 
     ENVIRONMENT: str = "development"
-    API_V1_PREFIX: str = "/api/v1"
+    API_PREFIX: str = "/api"
 
     # Public URL of the frontend application. Used to build links inside emails.
     FRONTEND_URL: str = "http://localhost:5173"

@@ -262,7 +262,7 @@ function Hero() {
               <DealFlowMark className="size-4 text-primary" />
               <span className="label-mono text-muted-foreground">Working on day zero</span>
               <span className="ml-auto font-mono text-xs text-muted-foreground">
-                /api/v1
+                /api
               </span>
             </div>
             <ul className="divide-y">
