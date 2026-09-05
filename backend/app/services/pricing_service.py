@@ -14,6 +14,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import cache
 from app.models.catalog import Currency, ProductVariant, VariantPrice
 
 UNIT = Decimal("0.0001")
@@ -136,6 +137,8 @@ async def rebuild_variant_prices(db: AsyncSession, *, variant_ids=None) -> int:
             await db.delete(row)
 
     await db.commit()
+    # Every cached price the catalog reads just moved.
+    await cache.bump(cache.NS_CATALOG)
     return written
 
 

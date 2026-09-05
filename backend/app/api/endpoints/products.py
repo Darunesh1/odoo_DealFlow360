@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination, get_db, get_pagination, require_roles
 from app.api.endpoints.serializers import serialize_product
+from app.core import cache
+from app.core.cache import cached_json
 from app.models.catalog import Product, ProductStatus, ProductVariant, VariantPrice
 from app.models.customer import CustomerTier
 from app.models.user import Role
@@ -40,7 +42,22 @@ router = APIRouter(
 
 @router.get("/catalog/stats", response_model=CatalogStats)
 async def read_catalog_stats(db: AsyncSession = Depends(get_db)) -> Any:
-    """The three KPI boxes on the product catalog screen."""
+    """The three KPI boxes on the product catalog screen.
+
+    Five aggregate queries for a header that changes only when an admin edits
+    the catalog, so it is cached and invalidated by the catalog writes rather
+    than re-counted on every page view.
+    """
+
+    async def load() -> dict:
+        return (await _catalog_stats(db)).model_dump()
+
+    return await cached_json(
+        cache.NS_CATALOG, "stats", cache.TTL_CATALOG, load
+    )
+
+
+async def _catalog_stats(db: AsyncSession) -> CatalogStats:
     active = (
         await db.execute(
             select(func.count())
@@ -67,7 +84,14 @@ async def read_catalog_stats(db: AsyncSession = Depends(get_db)) -> Any:
 
 @router.get("/categories", response_model=List[str])
 async def read_categories(db: AsyncSession = Depends(get_db)) -> Any:
-    return await catalog_service.list_categories(db)
+    """Backs the category typeahead on the product form - read constantly,
+    written when someone invents a new category."""
+    return await cached_json(
+        cache.NS_CATALOG,
+        "categories",
+        cache.TTL_CATALOG,
+        lambda: catalog_service.list_categories(db),
+    )
 
 
 @router.get("/products", response_model=Page[ProductListRow])
