@@ -33,6 +33,7 @@ from app.models.billing import (
     SubscriptionEventType,
     SubscriptionStatus,
 )
+from app.models.quotation import Quotation
 from app.models.user import User
 from app.services import audit_service
 
@@ -51,21 +52,31 @@ async def list_subscriptions(
     *,
     customer_id: Optional[uuid.UUID] = None,
     status: Optional[SubscriptionStatus] = None,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> Sequence[Subscription]:
     stmt = select(Subscription).order_by(Subscription.created_at.desc())
     if customer_id:
         stmt = stmt.where(Subscription.customer_id == customer_id)
     if status:
         stmt = stmt.where(Subscription.status == status)
+    if owner_id:
+        # Scoped through the order it came from: a plan belongs to whoever sold
+        # it, the same owner every other list scopes on.
+        stmt = stmt.join(
+            Quotation, Subscription.quotation_id == Quotation.id
+        ).where(Quotation.owner_id == owner_id)
     return (await db.execute(stmt)).scalars().all()
 
 
-async def counts(db: AsyncSession) -> dict[str, int]:
-    rows = (
-        await db.execute(
-            select(Subscription.status, func.count()).group_by(Subscription.status)
-        )
-    ).all()
+async def counts(
+    db: AsyncSession, *, owner_id: Optional[uuid.UUID] = None
+) -> dict[str, int]:
+    stmt = select(Subscription.status, func.count()).group_by(Subscription.status)
+    if owner_id:
+        stmt = stmt.join(
+            Quotation, Subscription.quotation_id == Quotation.id
+        ).where(Quotation.owner_id == owner_id)
+    rows = (await db.execute(stmt)).all()
     result = {status.value: 0 for status in SubscriptionStatus}
     for status, count in rows:
         result[status.value] = int(count)

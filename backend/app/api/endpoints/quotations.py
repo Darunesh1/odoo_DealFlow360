@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import Pagination, get_current_user, get_db, get_pagination, require_roles
-from app.models.quotation import QuotationChangeRequest, QuotationStatus
+from app.models.quotation import Quotation, QuotationChangeRequest, QuotationStatus
 from app.models.user import Role, User
 from app.schemas.catalog import SortOrder
 from app.schemas.quotation import (
@@ -65,6 +65,29 @@ def _not_found(message: str) -> HTTPException:
 
 def _bad_request(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+
+
+async def visible_quotation(
+    quotation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Quotation:
+    """The quotation this caller is allowed to touch.
+
+    The list is scoped by owner, but every by-id route used to load straight
+    from the path, so one rep could read, re-price, submit or delete another
+    rep's deal simply by holding its id. 404 rather than 403, the same answer
+    `approvals._guard_visibility` gives: whether a colleague's quotation exists
+    is not this caller's business.
+    """
+    try:
+        quotation = await ensure_quotation_loaded(db, quotation_id)
+    except ValueError:
+        raise _not_found("Quotation not found")
+    if not current_user.has_role(Role.ADMIN, Role.SALES_MANAGER):
+        if quotation.owner_id != current_user.id:
+            raise _not_found("Quotation not found")
+    return quotation
 
 
 def _row(quotation) -> QuotationListRow:
@@ -167,8 +190,12 @@ async def create_quotation(
 
 
 @router.get("/quotations/{quotation_id}", response_model=QuotationRead)
-async def read_quotation(quotation_id: uuid.UUID, db: AsyncSession = Depends(get_db)) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+async def read_quotation(
+    quotation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    quotation = await visible_quotation(quotation_id, db, current_user)
     return QuotationRead.model_validate(quotation)
 
 
@@ -177,8 +204,9 @@ async def patch_quotation(
     quotation_id: uuid.UUID,
     body: QuotationUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         updated = await update_quotation(db, quotation, body)
     except ValueError as exc:
@@ -191,8 +219,9 @@ async def create_quotation_line(
     quotation_id: uuid.UUID,
     body: QuotationLineCreate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         updated = await add_line(db, quotation, body)
     except ValueError as exc:
@@ -206,8 +235,9 @@ async def patch_quotation_line(
     line_id: uuid.UUID,
     body: QuotationLineUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         updated = await update_line(db, quotation, line_id, body)
     except ValueError as exc:
@@ -220,8 +250,9 @@ async def delete_quotation_line(
     quotation_id: uuid.UUID,
     line_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         updated = await remove_line(db, quotation, line_id)
     except ValueError as exc:
@@ -234,8 +265,9 @@ async def patch_quotation_discount(
     quotation_id: uuid.UUID,
     body: QuotationDiscountUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         updated = await update_quotation(db, quotation, body)
     except ValueError as exc:
@@ -249,7 +281,7 @@ async def submit_quotation_api(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     customer = await get_customer_by_id(db, quotation.customer_id)
     if not customer:
         raise _not_found("Customer not found")
@@ -275,9 +307,10 @@ async def submit_quotation_api(
 async def reload_quotation_api(
     quotation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """"Reload Data" from the workspace's top menu."""
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         updated = await reload_quotation(db, quotation)
     except ValueError as exc:
@@ -289,8 +322,9 @@ async def reload_quotation_api(
 async def delete_quotation_api(
     quotation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> None:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         await delete_quotation(db, quotation)
     except ValueError as exc:
@@ -303,9 +337,10 @@ async def delete_quotation_api(
 async def read_suggestions(
     quotation_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """The upsell and cross-sell panel beside the cart (spec B5)."""
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     return await upsell_service.suggest(db, quotation)
 
 
@@ -316,8 +351,11 @@ async def read_suggestions(
 async def dismiss_suggestion(
     quotation_id: uuid.UUID,
     product_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> None:
     """Hides one suggestion on this quotation for a day."""
+    await visible_quotation(quotation_id, db, current_user)
     await upsell_service.dismiss(quotation_id, product_id)
 
 
@@ -328,11 +366,13 @@ async def dismiss_suggestion(
 
 @router.get("/quotations/{quotation_id}/negotiation", response_model=NegotiationRead)
 async def read_negotiation(
-    quotation_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    quotation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Comments and counter-offers. Internal notes included - this is the
     internal side of the conversation."""
-    await ensure_quotation_loaded(db, quotation_id)
+    await visible_quotation(quotation_id, db, current_user)
     return NegotiationRead(
         comments=[
             CommentRead.model_validate(comment)
@@ -360,7 +400,7 @@ async def add_quotation_comment(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     try:
         await negotiation_service.add_comment(
             db,
@@ -373,7 +413,7 @@ async def add_quotation_comment(
     except ValueError as exc:
         raise _bad_request(exc)
     await db.commit()
-    return await read_negotiation(quotation_id, db=db)
+    return await read_negotiation(quotation_id, db=db, current_user=current_user)
 
 
 @router.post(
@@ -392,7 +432,7 @@ async def accept_change_request(
     automatically; if it does not, it auto-approves and goes on to fulfillment.
     Same code path either way.
     """
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     request = await db.get(QuotationChangeRequest, request_id)
     if request is None or request.quotation_id != quotation_id:
         raise _not_found("Change request not found")
@@ -426,7 +466,7 @@ async def reject_change_request(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     request = await db.get(QuotationChangeRequest, request_id)
     if request is None or request.quotation_id != quotation_id:
         raise _not_found("Change request not found")
@@ -437,7 +477,7 @@ async def reject_change_request(
         )
     except ValueError as exc:
         raise _bad_request(exc)
-    return await read_negotiation(quotation_id, db=db)
+    return await read_negotiation(quotation_id, db=db, current_user=current_user)
 
 
 @router.post("/quotations/{quotation_id}/send", response_model=QuotationRead)
@@ -445,13 +485,14 @@ async def send_to_customer(
     quotation_id: uuid.UUID,
     body: SendQuotationInput,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Emails the customer their portal link.
 
     Creates or upgrades their portal login on the way, so a customer who has
     never signed in still receives something they can act on.
     """
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     customer = await get_customer_by_id(db, quotation.customer_id)
     if not customer:
         raise _not_found("Customer not found")
@@ -476,7 +517,7 @@ async def send_to_customer(
 
     from app.services.portal_notifications import notify_quotation_sent
 
-    quotation = await ensure_quotation_loaded(db, quotation_id)
+    quotation = await visible_quotation(quotation_id, db, current_user)
     await notify_quotation_sent(db, quotation=quotation, recipient=recipient)
     return QuotationRead.model_validate(quotation)
 

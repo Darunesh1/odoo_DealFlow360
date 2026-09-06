@@ -331,6 +331,7 @@ async def list_invoices(
     customer_id: Optional[uuid.UUID] = None,
     quotation_id: Optional[uuid.UUID] = None,
     status: Optional[InvoiceStatus] = None,
+    owner_id: Optional[uuid.UUID] = None,
 ) -> Sequence[Invoice]:
     stmt = select(Invoice).order_by(Invoice.issue_date.desc(), Invoice.number.desc())
     if customer_id:
@@ -339,4 +340,10 @@ async def list_invoices(
         stmt = stmt.where(Invoice.quotation_id == quotation_id)
     if status:
         stmt = stmt.where(Invoice.status == status)
+    if owner_id:
+        # Through the order, like every other owner-scoped list. An invoice with
+        # no quotation behind it is not one rep's to see.
+        stmt = stmt.join(
+            Quotation, Invoice.quotation_id == Quotation.id
+        ).where(Quotation.owner_id == owner_id)
     return (await db.execute(stmt)).scalars().all()

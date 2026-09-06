@@ -291,20 +291,32 @@ async def _detail(
     )
 
 
-async def _load(db: AsyncSession, fulfillment_id: uuid.UUID):
+async def _load(
+    db: AsyncSession, fulfillment_id: uuid.UUID, viewer: Optional[User] = None
+):
     fulfillment = await fulfillment_service.load_fulfillment(db, fulfillment_id)
     if fulfillment is None:
         raise _missing()
     quotation = await ensure_quotation_loaded(db, fulfillment.quotation_id)
+    if viewer is not None and not viewer.has_role(
+        Role.ADMIN, Role.FINANCE, Role.SALES_MANAGER
+    ):
+        # The list is owner-scoped; without this the detail was reachable by id,
+        # so a rep could read a colleague's split. 404 rather than 403, matching
+        # the list, which simply does not show it.
+        if quotation.owner_id != viewer.id:
+            raise _missing()
     return fulfillment, quotation
 
 
 @router.get("/fulfillments/{fulfillment_id}", response_model=FulfillmentDetail)
 async def read_fulfillment(
-    fulfillment_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    fulfillment_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Screen 8: the recommended split, its cost, and the shipments behind it."""
-    fulfillment, quotation = await _load(db, fulfillment_id)
+    fulfillment, quotation = await _load(db, fulfillment_id, current_user)
     return await _detail(db, fulfillment, quotation)
 
 

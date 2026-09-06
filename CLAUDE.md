@@ -535,6 +535,27 @@ A rep may also create a customer mid-quotation (`POST /customers`, name and emai
 tier is not theirs to choose, and `sync_customer_portal_email` does the rest: the login, the
 link, the invite. Credit notes are listed by everyone and applied by Finance.
 
+### A rep sees their own deals, by id as well as in a list
+
+The role guard says who may reach a router; it does not say *whose rows*. Every rep-visible read
+is scoped a second time on `Quotation.owner_id`, and — the part that is easy to miss — **the
+by-id routes are scoped too**, because a list that filters is worthless if the detail behind it
+loads straight from the path.
+
+| Surface | Where the scoping lives |
+|---|---|
+| Quotations | `quotations.visible_quotation`, the dependency every by-id route loads through — read, patch, lines, discount, submit, reload, delete, suggestions, negotiation, comments, counter-offers, send |
+| Approvals | `_visible_to` on the list, `_guard_visibility` on the detail |
+| Fulfillment | the list's own predicate, and `_load(..., viewer)` for the detail |
+| Billing | `_scope_to(viewer)` → `owner_id` into `list_invoices` / `list_subscriptions` / the counts, and an owner check on each detail; credit notes reach the owner through their subscription's order |
+| Deal health | `GET /alerts` filters, and `health_service.counts(owner_id=...)` so the tiles agree with the table |
+| Reports | `_filters` pins a rep's `rep_id` to themselves — `rep_id` already filters the history *and* the quotation counts and is already in the cache key, so one line scopes the screen and both exports |
+
+Admin, Sales Manager and Finance are unrestricted; a rep asking for a row that is not theirs gets
+**404, not 403**, so the API is not an oracle for what colleagues are selling. A rep passing
+somebody else's `?rep=` to the reports screen gets their own numbers back rather than a refusal
+that confirms the id was real.
+
 Whose turn it is in an approval chain is a property of the loaded chain, not of the URL, so it is
 checked in `approval_service.decide` rather than by a router guard. A router-level guard could only
 say "some manager", not "the manager this step is waiting on".

@@ -71,6 +71,17 @@ require_finance = require_roles(Role.ADMIN, Role.FINANCE)
 UPCOMING_PERIODS = 6
 
 
+def _scope_to(viewer: User) -> Optional[uuid.UUID]:
+    """Whose data this caller may see.
+
+    Finance and management read the whole book; a sales rep reads the orders
+    they own. Returns the owner id to filter on, or None for no restriction.
+    """
+    if viewer.has_role(Role.ADMIN, Role.FINANCE, Role.SALES_MANAGER):
+        return None
+    return viewer.id
+
+
 def _bad(message: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
@@ -115,9 +126,12 @@ async def read_subscriptions(
     db: AsyncSession = Depends(get_db),
     pagination: Pagination = Depends(get_pagination),
     status_filter: Optional[SubscriptionStatus] = Query(default=None, alias="status"),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Screen 9: every recurring plan, whichever order it came from."""
-    rows = await subscription_service.list_subscriptions(db, status=status_filter)
+    rows = await subscription_service.list_subscriptions(
+        db, status=status_filter, owner_id=_scope_to(current_user)
+    )
     page = rows[pagination.skip : pagination.skip + pagination.limit]
     return Page[SubscriptionRow](
         items=[await _subscription_row(db, row) for row in page],
@@ -129,13 +143,20 @@ async def read_subscriptions(
 
 
 @router.get("/subscriptions/counts", response_model=SubscriptionCounts)
-async def read_subscription_counts(db: AsyncSession = Depends(get_db)) -> Any:
-    return SubscriptionCounts(**await subscription_service.counts(db))
+async def read_subscription_counts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    return SubscriptionCounts(
+        **await subscription_service.counts(db, owner_id=_scope_to(current_user))
+    )
 
 
 @router.get("/subscriptions/{subscription_id}", response_model=SubscriptionDetail)
 async def read_subscription(
-    subscription_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    subscription_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Screen 10: one-time lines and recurring lines from the same order, shown
     separately, plus the schedule ahead and the proration history."""
@@ -147,6 +168,11 @@ async def read_subscription(
         quotation = await ensure_quotation_loaded(db, subscription.quotation_id)
     except ValueError:
         raise _missing("Quotation")
+
+    owner_id = _scope_to(current_user)
+    if owner_id and quotation.owner_id != owner_id:
+        # Reachable by id otherwise, which would defeat the scoped list above.
+        raise _missing("Subscription")
 
     one_time = [
         OneTimeLineRead(
@@ -224,7 +250,7 @@ async def change_subscription_quantity(
     except ValueError as exc:
         raise _bad(str(exc))
     await db.commit()
-    return await read_subscription(subscription_id, db=db)
+    return await read_subscription(subscription_id, db=db, current_user=current_user)
 
 
 @router.post(
@@ -247,7 +273,7 @@ async def pause_subscription(
     except ValueError as exc:
         raise _bad(str(exc))
     await db.commit()
-    return await read_subscription(subscription_id, db=db)
+    return await read_subscription(subscription_id, db=db, current_user=current_user)
 
 
 @router.post(
@@ -270,7 +296,7 @@ async def resume_subscription(
     except ValueError as exc:
         raise _bad(str(exc))
     await db.commit()
-    return await read_subscription(subscription_id, db=db)
+    return await read_subscription(subscription_id, db=db, current_user=current_user)
 
 
 @router.post(
@@ -300,7 +326,7 @@ async def cancel_subscription(
     except ValueError as exc:
         raise _bad(str(exc))
     await db.commit()
-    return await read_subscription(subscription_id, db=db)
+    return await read_subscription(subscription_id, db=db, current_user=current_user)
 
 
 # --------------------------------------------------------------------------- #
@@ -337,9 +363,12 @@ async def read_invoices(
     db: AsyncSession = Depends(get_db),
     pagination: Pagination = Depends(get_pagination),
     status_filter: Optional[InvoiceStatus] = Query(default=None, alias="status"),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Screen 12: every invoice from one-time and recurring orders alike."""
-    rows = await invoice_service.list_invoices(db, status=status_filter)
+    rows = await invoice_service.list_invoices(
+        db, status=status_filter, owner_id=_scope_to(current_user)
+    )
     page = rows[pagination.skip : pagination.skip + pagination.limit]
     return Page[InvoiceRow](
         items=[await _invoice_row(db, invoice) for invoice in page],
@@ -351,10 +380,17 @@ async def read_invoices(
 
 
 @router.get("/invoices/counts", response_model=InvoiceCounts)
-async def read_invoice_counts(db: AsyncSession = Depends(get_db)) -> Any:
-    rows = (
-        await db.execute(select(Invoice.status, func.count()).group_by(Invoice.status))
-    ).all()
+async def read_invoice_counts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    stmt = select(Invoice.status, func.count()).group_by(Invoice.status)
+    owner_id = _scope_to(current_user)
+    if owner_id:
+        stmt = stmt.join(
+            Quotation, Invoice.quotation_id == Quotation.id
+        ).where(Quotation.owner_id == owner_id)
+    rows = (await db.execute(stmt)).all()
     counts = {status_.value: int(count) for status_, count in rows}
     return InvoiceCounts(
         unpaid=counts.get("unpaid", 0),
@@ -367,12 +403,24 @@ async def read_invoice_counts(db: AsyncSession = Depends(get_db)) -> Any:
 
 @router.get("/invoices/{invoice_id}", response_model=InvoiceDetail)
 async def read_invoice(
-    invoice_id: uuid.UUID, db: AsyncSession = Depends(get_db)
+    invoice_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """Screen 13: the lifecycle strip, the lines, and the payment trail."""
     invoice = await db.get(Invoice, invoice_id)
     if invoice is None:
         raise _missing("Invoice")
+
+    owner_id = _scope_to(current_user)
+    if owner_id:
+        order = (
+            await db.get(Quotation, invoice.quotation_id)
+            if invoice.quotation_id
+            else None
+        )
+        if order is None or order.owner_id != owner_id:
+            raise _missing("Invoice")
 
     lines = (
         await db.execute(
@@ -444,7 +492,7 @@ async def invoice_order(
     )
     if invoice is None:
         return None
-    return await read_invoice(invoice.id, db=db)
+    return await read_invoice(invoice.id, db=db, current_user=current_user)
 
 
 @router.post(
@@ -477,7 +525,7 @@ async def record_payment(
     except ValueError as exc:
         raise _bad(str(exc))
     await db.commit()
-    return await read_invoice(invoice_id, db=db)
+    return await read_invoice(invoice_id, db=db, current_user=current_user)
 
 
 # --------------------------------------------------------------------------- #
@@ -513,6 +561,7 @@ async def _credit_note_row(db: AsyncSession, note: CreditNote) -> CreditNoteRead
 async def read_credit_notes(
     db: AsyncSession = Depends(get_db),
     status_filter: Optional[CreditNoteStatus] = Query(default=None, alias="status"),
+    current_user: User = Depends(get_current_user),
 ) -> Any:
     """What the business owes back, and why.
 
@@ -522,18 +571,34 @@ async def read_credit_notes(
     stmt = select(CreditNote).order_by(CreditNote.created_at.desc())
     if status_filter is not None:
         stmt = stmt.where(CreditNote.status == status_filter)
+    owner_id = _scope_to(current_user)
+    if owner_id:
+        # A note traces back through its subscription to the order that sold it.
+        stmt = (
+            stmt.join(Subscription, CreditNote.subscription_id == Subscription.id)
+            .join(Quotation, Subscription.quotation_id == Quotation.id)
+            .where(Quotation.owner_id == owner_id)
+        )
     notes = (await db.execute(stmt)).scalars().all()
     return [await _credit_note_row(db, note) for note in notes]
 
 
 @router.get("/credit-notes/counts", response_model=CreditNoteCounts)
-async def read_credit_note_counts(db: AsyncSession = Depends(get_db)) -> Any:
-    rows = (
-        await db.execute(
-            select(CreditNote.status, func.count(), func.coalesce(func.sum(CreditNote.amount), 0))
-            .group_by(CreditNote.status)
+async def read_credit_note_counts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    stmt = select(
+        CreditNote.status, func.count(), func.coalesce(func.sum(CreditNote.amount), 0)
+    ).group_by(CreditNote.status)
+    owner_id = _scope_to(current_user)
+    if owner_id:
+        stmt = (
+            stmt.join(Subscription, CreditNote.subscription_id == Subscription.id)
+            .join(Quotation, Subscription.quotation_id == Quotation.id)
+            .where(Quotation.owner_id == owner_id)
         )
-    ).all()
+    rows = (await db.execute(stmt)).all()
     counts = {status_: (int(n), float(total)) for status_, n, total in rows}
     return CreditNoteCounts(
         issued=counts.get(CreditNoteStatus.ISSUED, (0, 0))[0],

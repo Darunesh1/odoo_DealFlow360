@@ -302,15 +302,25 @@ async def list_alerts(
     return (await db.execute(stmt)).scalars().all()
 
 
-async def counts(db: AsyncSession) -> dict[str, int]:
-    """The three tiles at the top of the deal health dashboard."""
-    rows = (
-        await db.execute(
-            select(DealHealthAlert.alert_type, func.count())
-            .where(DealHealthAlert.status != AlertStatus.RESOLVED)
-            .group_by(DealHealthAlert.alert_type)
-        )
-    ).all()
+async def counts(
+    db: AsyncSession, *, owner_id: Optional[uuid.UUID] = None
+) -> dict[str, int]:
+    """The three tiles at the top of the deal health dashboard.
+
+    `owner_id` scopes them the way `GET /alerts` scopes its rows, so a rep's
+    tiles agree with the table underneath rather than counting the whole
+    company's flags.
+    """
+    stmt = (
+        select(DealHealthAlert.alert_type, func.count())
+        .where(DealHealthAlert.status != AlertStatus.RESOLVED)
+        .group_by(DealHealthAlert.alert_type)
+    )
+    if owner_id is not None:
+        stmt = stmt.join(
+            Quotation, DealHealthAlert.quotation_id == Quotation.id
+        ).where(Quotation.owner_id == owner_id)
+    rows = (await db.execute(stmt)).all()
     result = {alert_type.value: 0 for alert_type in AlertType}
     for alert_type, count in rows:
         result[alert_type.value] = int(count)

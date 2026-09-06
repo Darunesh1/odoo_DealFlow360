@@ -100,8 +100,17 @@ async def read_alerts(
 
 
 @router.get("/alerts/counts", response_model=AlertCounts)
-async def read_alert_counts(db: AsyncSession = Depends(get_db)) -> Any:
-    counts = await health_service.counts(db)
+async def read_alert_counts(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
+    """Scoped like the table below them: a rep's tiles count their own flags."""
+    owner_id = (
+        None
+        if current_user.has_role(Role.ADMIN, Role.SALES_MANAGER, Role.FINANCE)
+        else current_user.id
+    )
+    counts = await health_service.counts(db, owner_id=owner_id)
     return AlertCounts(
         stalled_deals=counts.get(AlertType.STALLED_DEAL.value, 0),
         discount_anomalies=counts.get(AlertType.DISCOUNT_ANOMALY.value, 0),
@@ -176,6 +185,7 @@ async def act_on_alert(
 # --------------------------------------------------------------------------- #
 
 def _filters(
+    current_user: User = Depends(get_current_user),
     date_from: Optional[date] = Query(default=None, alias="from"),
     date_to: Optional[date] = Query(default=None, alias="to"),
     rep_id: Optional[uuid.UUID] = Query(default=None, alias="rep"),
@@ -187,7 +197,16 @@ def _filters(
     ),
 ) -> ReportFilters:
     """Spec A7's four filter dimensions, as one dependency so the report and
-    both exports cannot drift apart."""
+    both exports cannot drift apart.
+
+    A sales rep is pinned to their own figures. `rep_id` already filters both
+    the sales history and the quotation counts and is already part of the cache
+    key, so forcing it here scopes the screen and both exports at once - and a
+    rep passing somebody else's `?rep=` gets their own numbers, not a refusal
+    that tells them the id was real.
+    """
+    if not current_user.has_role(Role.ADMIN, Role.SALES_MANAGER, Role.FINANCE):
+        rep_id = current_user.id
     return ReportFilters(
         date_from=date_from,
         date_to=date_to,
