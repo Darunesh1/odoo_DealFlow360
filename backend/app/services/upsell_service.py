@@ -30,7 +30,8 @@ is identical with the key removed, minus the rationale lines.
 from decimal import Decimal
 import hashlib
 import logging
-from typing import Optional
+import re
+from typing import NamedTuple, Optional
 import uuid
 
 from pydantic import BaseModel, ValidationError
@@ -39,6 +40,7 @@ from sqlalchemy import case, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import cache
+from app.core.cache import cached_json
 from app.core.config import settings
 from app.models.catalog import (
     PairingSource,
@@ -48,6 +50,7 @@ from app.models.catalog import (
     ProductVariant,
     VariantPrice,
 )
+from app.models.analytics import SalesRecord
 from app.models.quotation import Quotation
 from app.services import ai_ranking_service
 
@@ -78,19 +81,58 @@ CACHE_OVERFETCH = 8
 # handful of confirmed orders this system has would be noise, and it would put
 # an aggregate on the critical path of a screen that refetches on every
 # keystroke. Worth revisiting once there are orders to learn from.
-CATEGORY_AFFINITY: dict[str, tuple[str, ...]] = {
-    "hardware": ("Accessories", "Peripherals", "Services", "Subscription"),
-    "peripherals": ("Accessories", "Hardware", "Services"),
-    "networking": ("Hardware", "Services", "Subscription", "Accessories"),
-    "accessories": ("Hardware", "Peripherals"),
-    "services": ("Subscription", "Hardware", "Networking"),
-    "subscription": ("Services", "Hardware", "Networking"),
+CATEGORY_AFFINITY: dict[str, dict[str, float]] = {
+    "hardware": {"Accessories": 1.0, "Peripherals": 0.9, "Services": 0.7, "Subscription": 0.5},
+    "peripherals": {"Accessories": 1.0, "Services": 0.45, "Hardware": 0.4},
+    "networking": {"Services": 1.0, "Accessories": 0.75, "Subscription": 0.55, "Hardware": 0.4},
+    "accessories": {"Hardware": 0.55, "Peripherals": 0.55},
+    "services": {"Subscription": 1.0, "Hardware": 0.45, "Networking": 0.4},
+    "subscription": {"Services": 1.0, "Hardware": 0.4, "Networking": 0.35},
 }
 
-# Weights for the tiers that have no configured weight of their own. Below the
-# 1.0 floor a promoted product gets, so configuration always outranks a guess.
-AFFINITY_WEIGHT = 0.6
-FILLER_WEIGHT = 0.3
+# --------------------------------------------------------------------------- #
+# The scoring policy, in one place so it can be argued with.
+#
+# Every component is normalised to 0-1 and then weighted, so these numbers *are*
+# the policy. They add to 100 before the duplicate penalty.
+#
+# Margin is deliberately worth only ten points, and is a percentile within the
+# candidate pool rather than a currency amount. The old ranking multiplied a
+# tier weight by the raw margin delta, and with margins spanning $25 to $710 in
+# a real catalogue that meant 0.3 x $709 beat 0.6 x $50 - so the panel showed
+# the most profitable products in the catalogue on every quote, whatever was on
+# it. Relevance has to be able to outrank money.
+# --------------------------------------------------------------------------- #
+W_CO_PURCHASE = 40.0    # mined from what has actually been sold together
+W_ADMIN_PAIRING = 20.0  # a product_pairings row somebody typed
+W_AFFINITY = 15.0       # complementary-category demand
+W_CUSTOMER_FIT = 10.0   # this customer has bought it, or its category, before
+W_MARGIN = 10.0         # tiebreak, never the driver
+W_PROMOTION = 5.0       # A6 asks that promoted products rank higher
+P_NEAR_DUPLICATE = 30.0 # another laptop next to a laptop is not a cross-sell
+
+# A pairing weight at or above this counts as a full-strength signal.
+PAIRING_SATURATION = 2.0
+# A category already on the quote is worth less: a cross-sell beats a same-aisle
+# repeat, but a second accessory is still a legitimate suggestion.
+SAME_CATEGORY_PENALTY = 0.45
+# Below this a category is not really wanted, and more than this many categories
+# is not a preference. Together these are what stop the affinity set covering
+# the whole catalogue, which is what made every panel identical.
+AFFINITY_CUTOFF = 0.35
+MAX_AFFINITY_CATEGORIES = 3
+# So one strong signal cannot fill the panel with five of the same thing.
+MAX_PER_CATEGORY = 2
+
+# Words that carry no product identity. Every adjective the demo catalogue uses
+# is here, so "Studio Laptop" and "Studio Dock" are not mistaken for the same
+# kind of thing while "Studio Laptop" and "Pro Laptop" are.
+NAME_STOPWORDS = frozenset({
+    "studio", "compact", "rugged", "prime", "ultra", "lite", "edge", "plus",
+    "mini", "max", "series", "with", "and", "for", "the", "kit", "new",
+})
+# Shorter tokens are initialisms and noise more often than they are nouns.
+MIN_TOKEN_LENGTH = 4
 
 
 class Suggestion(BaseModel):
@@ -116,6 +158,8 @@ class Suggestion(BaseModel):
     # key is configured, when the call failed, or when this card was backfilled
     # from the deterministic order.
     rationale: Optional[str] = None
+    # The additive score that put it here, out of 100.
+    score: float = 0.0
 
 
 def _min_margin_percent() -> float:
@@ -124,8 +168,12 @@ def _min_margin_percent() -> float:
 
 async def _pairing_weights(
     db: AsyncSession, product_ids: set[uuid.UUID]
-) -> dict[uuid.UUID, tuple[float, str]]:
-    """Configured pairings for what is already on the quote, as (weight, why).
+) -> dict[uuid.UUID, tuple[float, str, bool]]:
+    """Pairings for what is on the quote, as (weight, why, was it mined).
+
+    The third value separates the two strongest signals: a row mined from
+    confirmed sales history is evidence, while one an admin typed is judgement.
+    They are weighted differently and they say different things on the card.
 
     A product paired from two different lines keeps the higher weight.
     """
@@ -142,35 +190,141 @@ async def _pairing_weights(
         )
     ).all()
 
-    scored: dict[uuid.UUID, tuple[float, str]] = {}
+    scored: dict[uuid.UUID, tuple[float, str, bool]] = {}
     for suggested_id, weight, source in rows:
         weight = float(weight)
-        reason = (
-            "Often bought together"
-            if source == PairingSource.CO_PURCHASE
-            else "Recommended pairing"
-        )
+        mined = source == PairingSource.CO_PURCHASE
+        reason = "Often bought together" if mined else "Recommended pairing"
         current = scored.get(suggested_id)
         if current is None or weight > current[0]:
-            scored[suggested_id] = (weight, reason)
+            scored[suggested_id] = (weight, reason, mined)
     return scored
 
 
-def _affinity_categories(quotation: Quotation) -> tuple[list[str], dict[str, str]]:
-    """Categories that complement what is on the quote, and which line drove each.
+class CustomerHistory(NamedTuple):
+    """What this customer has bought before.
 
-    The second value is what lets a card say "Pairs with Hardware" rather than
-    an unattributed "Recommended".
+    A returning enterprise buyer and a brand-new logo should not see the same
+    panel. A customer with no history scores zero everywhere, which needs no
+    special case anywhere else.
     """
-    wanted: list[str] = []
-    driver: dict[str, str] = {}
+
+    products: frozenset[uuid.UUID]
+    categories: frozenset[str]
+
+    def fit(self, product_id: uuid.UUID, category: str) -> float:
+        if product_id in self.products:
+            return 1.0
+        return 0.5 if category in self.categories else 0.0
+
+
+EMPTY_HISTORY = CustomerHistory(frozenset(), frozenset())
+
+
+async def _customer_history(
+    db: AsyncSession, customer_id: Optional[uuid.UUID]
+) -> CustomerHistory:
+    """One query, cached: every product and category this customer has bought.
+
+    Read from `sales_records`, which only `order_service.confirm_quotation`
+    writes, so the TTL is the only invalidation it needs.
+    """
+    if customer_id is None:
+        return EMPTY_HISTORY
+
+    async def load() -> dict:
+        rows = (
+            await db.execute(
+                select(SalesRecord.product_id, SalesRecord.category)
+                .where(SalesRecord.customer_id == customer_id)
+                .distinct()
+            )
+        ).all()
+        return {
+            "products": [str(product_id) for product_id, _ in rows],
+            "categories": [category for _, category in rows if category],
+        }
+
+    payload = await cached_json(
+        cache.NS_REPORT, f"customer-history:{customer_id}", cache.TTL_CATALOG, load
+    )
+    return CustomerHistory(
+        products=frozenset(uuid.UUID(value) for value in payload["products"]),
+        categories=frozenset(payload["categories"]),
+    )
+
+
+class CategoryDemand(NamedTuple):
+    """How much this quote wants each category, and what made it want it."""
+
+    demand: dict[str, float]
+    driver: dict[str, str]
+    on_quote: set[str]
+
+
+def _category_demand(quotation: Quotation) -> CategoryDemand:
+    """What would complement this quote, scored rather than merely listed.
+
+    The old version returned the *union* of every line's complementary
+    categories, which on a three-line quote covered all six categories in the
+    catalogue - so "affinity" matched everything and discriminated nothing.
+
+    Three things fix that. Lines combine with a noisy-OR, so two Hardware lines
+    reinforce Accessories without the number running away. A category already on
+    the quote is discounted, because a cross-sell beats a same-aisle repeat. And
+    the result is cut below a threshold and capped, so a quote wants a few
+    things strongly rather than everything weakly.
+    """
+    on_quote = {
+        (line.category or "").strip()
+        for line in quotation.lines
+        if (line.category or "").strip()
+    }
+
+    # noisy-OR, accumulated as the probability that *nothing* wanted it
+    residual: dict[str, float] = {}
+    best: dict[str, tuple[float, str]] = {}
     for line in quotation.lines:
         source = (line.category or "").strip()
-        for target in CATEGORY_AFFINITY.get(source.lower(), ()):
-            if target not in driver:
-                driver[target] = source
-                wanted.append(target)
-    return wanted, driver
+        for target, weight in CATEGORY_AFFINITY.get(source.lower(), {}).items():
+            residual[target] = residual.get(target, 1.0) * (1.0 - weight)
+            current = best.get(target)
+            # Ties broken on the name so the card reads the same on every load.
+            if current is None or (weight, source) > (current[0], current[1]):
+                best[target] = (weight, source)
+
+    demand = {target: 1.0 - value for target, value in residual.items()}
+    for target in list(demand):
+        if target in on_quote:
+            demand[target] *= SAME_CATEGORY_PENALTY
+
+    kept = sorted(
+        ((target, value) for target, value in demand.items() if value >= AFFINITY_CUTOFF),
+        key=lambda item: (-item[1], item[0]),
+    )[:MAX_AFFINITY_CATEGORIES]
+
+    return CategoryDemand(
+        demand=dict(kept),
+        driver={target: best[target][1] for target, _ in kept},
+        on_quote=on_quote,
+    )
+
+
+def _tokens(name: str) -> set[str]:
+    """The words in a product name that say what kind of thing it is."""
+    return {
+        token
+        for token in re.split(r"[^a-z]+", (name or "").lower())
+        if len(token) >= MIN_TOKEN_LENGTH and token not in NAME_STOPWORDS
+    }
+
+
+def _line_tokens(quotation: Quotation) -> set[str]:
+    """What kinds of thing are already on the quote."""
+    tokens: set[str] = set()
+    for line in quotation.lines:
+        tokens |= _tokens(line.product_name)
+    return tokens
 
 
 async def _priced_pool(
@@ -242,7 +396,11 @@ async def _priced_pool(
             select(sub)
             .order_by(
                 tier,
-                (sub.c.unit_price - sub.c.unit_cost).desc(),
+                # Margin *percent*, not the absolute delta. Ordering the pool by
+                # currency amount meant the sixty rows handed to the scorer were
+                # always the dearest sixty, so a $30 cable could never reach the
+                # panel however well it paired.
+                ((sub.c.unit_price - sub.c.unit_cost) / sub.c.unit_price).desc(),
                 sub.c.name,
             )
             .limit(POOL_LIMIT)
@@ -251,72 +409,153 @@ async def _priced_pool(
     return [dict(row) for row in rows]
 
 
+def _margin_percentiles(pool: list[dict]) -> dict[uuid.UUID, float]:
+    """Where each candidate's margin sits within this pool, 0-1.
+
+    A percentile rather than the currency amount, which is the whole point: the
+    most profitable product in the catalogue should be worth a few points more
+    than the least, not seven hundred times more.
+    """
+    values = sorted({float(row["unit_price"]) - float(row["unit_cost"]) for row in pool})
+    if len(values) <= 1:
+        return {row["product_id"]: 1.0 for row in pool}
+    rank = {value: index / (len(values) - 1) for index, value in enumerate(values)}
+    return {
+        row["product_id"]: rank[float(row["unit_price"]) - float(row["unit_cost"])]
+        for row in pool
+    }
+
+
+def _score_candidate(
+    row: dict,
+    *,
+    pairings: dict[uuid.UUID, tuple[float, str, bool]],
+    affinity: CategoryDemand,
+    customer: CustomerHistory,
+    margin_percentile: float,
+    duplicate_tokens: set[str],
+) -> tuple[float, str]:
+    """One candidate's score out of 100, and the reason the card will show."""
+    score = 0.0
+    reason = "High margin add-on"
+
+    paired = pairings.get(row["product_id"])
+    if paired is not None:
+        weight, pair_reason, mined = paired
+        strength = min(weight, PAIRING_SATURATION) / PAIRING_SATURATION
+        score += (W_CO_PURCHASE if mined else W_ADMIN_PAIRING) * strength
+        reason = pair_reason
+
+    demand = affinity.demand.get(row["category"], 0.0)
+    if demand > 0:
+        score += W_AFFINITY * demand
+        if paired is None:
+            driver = affinity.driver.get(row["category"], row["category"])
+            reason = (
+                f"Completes the {row['category']} on this quote"
+                if row["category"] in affinity.on_quote
+                else f"Pairs with the {driver} on this quote"
+            )
+
+    fit = customer.fit(row["product_id"], row["category"])
+    if fit > 0:
+        score += W_CUSTOMER_FIT * fit
+        if paired is None and demand <= 0:
+            reason = "This customer buys these"
+
+    if row["is_promoted"]:
+        score += W_PROMOTION
+        if paired is None and demand <= 0 and fit <= 0:
+            reason = "Currently promoted"
+
+    score += W_MARGIN * margin_percentile
+
+    # Another laptop beside a laptop is not a cross-sell. A penalty rather than
+    # an exclusion: sometimes a rep really is adding a second unit, and a thin
+    # catalogue must not produce an empty panel. A configured pairing is exempt,
+    # being somebody's deliberate decision.
+    if paired is None and _tokens(row["name"]) & duplicate_tokens:
+        score -= P_NEAR_DUPLICATE
+
+    return score, reason
+
+
+def _diversify(suggestions: list[Suggestion]) -> list[Suggestion]:
+    """Stop one strong signal filling the panel with five of the same thing.
+
+    Stable: anything over the per-category cap is deferred to the tail rather
+    than dropped, so the list is the same length and the order within a category
+    is untouched.
+    """
+    head: list[Suggestion] = []
+    tail: list[Suggestion] = []
+    seen: dict[str, int] = {}
+    for suggestion in suggestions:
+        count = seen.get(suggestion.category, 0)
+        if count < MAX_PER_CATEGORY:
+            seen[suggestion.category] = count + 1
+            head.append(suggestion)
+        else:
+            tail.append(suggestion)
+    return head + tail
+
+
 def _rank_deterministic(
     pool: list[dict],
-    pairings: dict[uuid.UUID, tuple[float, str]],
-    driver: dict[str, str],
+    pairings: dict[uuid.UUID, tuple[float, str, bool]],
+    affinity: CategoryDemand,
+    customer: CustomerHistory,
+    duplicate_tokens: set[str],
 ) -> list[Suggestion]:
-    """Score the pool without asking anybody's opinion.
+    """Score and order the pool without asking anybody's opinion.
 
-    This is the answer the panel shows when no key is configured, and the
-    fallback whenever the ranker declines to have one. Nothing downstream may
-    replace it - only reorder it.
+    This is what the panel shows when no key is configured, and the fallback
+    whenever the ranker declines to have one. Nothing downstream may replace it -
+    only reorder it.
     """
-    weights: dict[uuid.UUID, float] = {}
-    suggestions: list[Suggestion] = []
+    percentiles = _margin_percentiles(pool)
+    scored: list[tuple[float, Suggestion]] = []
 
     for row in pool:
-        product_id = row["product_id"]
-        paired = pairings.get(product_id)
-        if paired is not None:
-            weight, reason = paired
-            if row["is_promoted"]:
-                # Promoted is a floor, not a ceiling: a strong pairing that is
-                # also promoted keeps its own weight.
-                weight = max(weight, 1.0)
-        elif row["is_promoted"]:
-            weight, reason = 1.0, "Currently promoted"
-        elif row["category"] in driver:
-            weight = AFFINITY_WEIGHT
-            reason = f"Pairs with {driver[row['category']]}"
-        else:
-            weight, reason = FILLER_WEIGHT, "High margin add-on"
-
+        score, reason = _score_candidate(
+            row,
+            pairings=pairings,
+            affinity=affinity,
+            customer=customer,
+            margin_percentile=percentiles[row["product_id"]],
+            duplicate_tokens=duplicate_tokens,
+        )
         unit_price = Decimal(str(row["unit_price"]))
         unit_cost = Decimal(str(row["unit_cost"]))
         margin = unit_price - unit_cost
-        weights[product_id] = weight
-        suggestions.append(
-            Suggestion(
-                product_id=product_id,
-                variant_id=row["variant_id"],
-                name=row["name"],
-                category=row["category"],
-                sku=row["sku"],
-                unit_price=float(unit_price),
-                unit_cost=float(unit_cost),
-                margin_delta=float(margin),
-                margin_percent=round(
-                    float(margin / unit_price * 100) if unit_price else 0.0, 2
+        scored.append(
+            (
+                score,
+                Suggestion(
+                    product_id=row["product_id"],
+                    variant_id=row["variant_id"],
+                    name=row["name"],
+                    category=row["category"],
+                    sku=row["sku"],
+                    unit_price=float(unit_price),
+                    unit_cost=float(unit_cost),
+                    margin_delta=float(margin),
+                    margin_percent=round(
+                        float(margin / unit_price * 100) if unit_price else 0.0, 2
+                    ),
+                    is_promoted=row["is_promoted"],
+                    promotion_label=row["promotion_label"],
+                    is_recurring=row["is_subscription"],
+                    reason=reason,
+                    score=round(score, 1),
                 ),
-                is_promoted=row["is_promoted"],
-                promotion_label=row["promotion_label"],
-                is_recurring=row["is_subscription"],
-                reason=reason,
             )
         )
 
-    # Promoted first, then by how much the weight and the margin together are
-    # worth. Ties broken by name so the order is stable between refreshes rather
-    # than shuffling under the rep's cursor.
-    suggestions.sort(
-        key=lambda s: (
-            not s.is_promoted,
-            -(weights[s.product_id] * s.margin_delta),
-            s.name,
-        )
-    )
-    return suggestions
+    # Score first; name and id only to make the order total, so the panel does
+    # not shuffle under the rep's cursor between refreshes.
+    scored.sort(key=lambda item: (-round(item[0], 3), item[1].name, str(item[1].product_id)))
+    return _diversify([suggestion for _, suggestion in scored])
 
 
 def _fingerprint(quotation: Quotation) -> str:
@@ -346,16 +585,19 @@ async def _build(
     """The whole pipeline, uncached: source, price, rank, then re-rank."""
     on_quote = {line.product_id for line in quotation.lines if line.product_id}
     pairings = await _pairing_weights(db, on_quote)
-    affinity, driver = _affinity_categories(quotation)
+    affinity = _category_demand(quotation)
+    customer = await _customer_history(db, quotation.customer_id)
 
     pool = await _priced_pool(
         db,
         quotation,
         exclude=exclude | on_quote,
         pairing_ids=list(pairings),
-        affinity=affinity,
+        affinity=list(affinity.demand),
     )
-    ranked = _rank_deterministic(pool, pairings, driver)[:AI_CANDIDATE_LIMIT]
+    ranked = _rank_deterministic(
+        pool, pairings, affinity, customer, _line_tokens(quotation)
+    )[:AI_CANDIDATE_LIMIT]
     if not ranked:
         return []
 

@@ -1066,6 +1066,8 @@ export interface UpsellSuggestion {
   reason: string
   /** One line from the AI ranker, or null when it did not run. */
   rationale: string | null
+  /** What the scoring engine gave it, out of 100. */
+  score: number
 }
 
 export interface QuotationSubmitResponse {

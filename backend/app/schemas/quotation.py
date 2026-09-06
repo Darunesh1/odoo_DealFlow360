@@ -182,6 +182,9 @@ class UpsellSuggestion(BaseModel):
     is_recurring: bool
     reason: str
     rationale: Optional[str] = None
+    # What the scoring engine gave it, out of 100. Shown on the card so a
+    # rep can see the panel is ranking rather than guessing.
+    score: float = 0.0
 
 
 class QuotationCreate(BaseModel):
