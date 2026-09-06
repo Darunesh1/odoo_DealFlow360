@@ -23,7 +23,7 @@ from app.core.security import (
     parse_uuid,
     verify_password,
 )
-from app.models.user import Role, User
+from app.models.user import User
 from app.schemas.common import Message
 from app.schemas.token import RefreshRequest, Token, TokenPayload
 from app.schemas.user import (
@@ -44,7 +44,6 @@ from app.services import (
 )
 from app.tasks.email_tasks import (
     send_invite_email,
-    send_sign_in_alert_email,
     send_password_reset_email,
     send_verification_email,
     send_welcome_email,
@@ -220,17 +219,6 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
-        )
-
-    # Customers get told when their account is used; staff do not. Fire and
-    # forget - a sign-in must not wait on, or fail because of, SMTP.
-    if Role.CUSTOMER in user.roles:
-        send_sign_in_alert_email.delay(
-            email=user.email,
-            full_name=user.full_name or "",
-            when=datetime.now(timezone.utc).strftime("%d %b %Y at %H:%M UTC"),
-            ip_address=rate_limit.client_ip(request),
-            user_agent=request.headers.get("user-agent", ""),
         )
 
     return _issue_tokens(user)
