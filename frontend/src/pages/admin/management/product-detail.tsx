@@ -36,7 +36,6 @@ import {
   PRODUCT_UNITS,
   RECURRING_INTERVALS,
   type Currency,
-  type CustomerTier,
   type Product,
   type ProductUnit,
   type RecurringInterval,
@@ -90,11 +89,6 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
     queryFn: async () => (await api.get<Product>(`/products/${productId}`)).data,
     enabled: !isNew,
   })
-  const tiersQuery = useQuery({
-    queryKey: ["admin", "customer-tiers"],
-    queryFn: async () => (await api.get<CustomerTier[]>("/admin/customer-tiers")).data,
-    enabled: !readOnly,
-  })
   const currenciesQuery = useQuery({
     queryKey: ["admin", "currencies"],
     queryFn: async () => (await api.get<Currency[]>("/admin/currencies")).data,
@@ -111,7 +105,6 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
   })
 
   const product = productQuery.data ?? null
-  const tiers = tiersQuery.data ?? []
   const currencies = currenciesQuery.data ?? []
   const warehouses = useMemo(
     () => (warehousesQuery.data ?? []).filter((warehouse) => warehouse.is_active),
@@ -162,23 +155,6 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
 
   const variants = product?.variants ?? []
   const stocked = !isSubscription
-
-  /** The formula, mirrored client-side so the grid fills as you type. The
-   * server recomputes it on save; this is preview, not the source of truth.
-   *
-   * The tier no longer discounts the price - it caps what a rep may take off.
-   * So every tier sees the same list, and what differs is the floor. */
-  const listPrice = (basePrice: string, currency: Currency) => {
-    const amount = Number(basePrice)
-    if (!basePrice || !Number.isFinite(amount) || !baseCurrency) return null
-    return (amount * baseCurrency.rate_to_base) / currency.rate_to_base
-  }
-
-  /** The lowest a rep on this tier may sell it for. */
-  const floorPrice = (basePrice: string, tier: CustomerTier, currency: Currency) => {
-    const list = listPrice(basePrice, currency)
-    return list == null ? null : list * (1 - tier.max_discount_percent / 100)
-  }
 
   const rowComplete = (row: MatrixRow | undefined) =>
     Boolean(row) &&
@@ -596,9 +572,10 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
             </CardTitle>
             <CardDescription>
               Enter the unit cost and the unit price in{" "}
-              {baseCurrency?.code ?? "the base currency"}. Every tier and currency price
-              is calculated from the price and that tier&apos;s discount — margin comes
-              from the cost.
+              {baseCurrency?.code ?? "the base currency"}. Every other currency is
+              converted from it on save, and margin comes from the cost. What a
+              rep may discount is the tier&apos;s ceiling, set under Discount
+              Tiers.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4 overflow-x-auto">
@@ -626,19 +603,6 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                     <TableHead className="min-w-[10rem]">
                       Available licences
                     </TableHead>
-                  )}
-                  {tiers.flatMap((tier) =>
-                    currencies.map((currency) => (
-                      <TableHead
-                        key={`${tier.id}-${currency.code}`}
-                        className="min-w-[8rem] text-right"
-                      >
-                        {tier.name} {currency.code}
-                        <span className="block text-[11px] font-normal text-muted-foreground">
-                          list · floor at {tier.max_discount_percent}%
-                        </span>
-                      </TableHead>
-                    ))
                   )}
                 </TableRow>
               </TableHeader>
@@ -725,29 +689,6 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                           />
                         </TableCell>
                       )}
-                      {tiers.flatMap((tier) =>
-                        currencies.map((currency) => {
-                          const list = listPrice(row?.basePrice ?? "", currency)
-                          const floor = floorPrice(row?.basePrice ?? "", tier, currency)
-                          return (
-                            <TableCell
-                              key={`${tier.id}-${currency.code}`}
-                              className="text-right tabular-nums"
-                            >
-                              {list == null ? (
-                                "—"
-                              ) : (
-                                <>
-                                  <span className="block">{list.toFixed(2)}</span>
-                                  <span className="block text-xs text-muted-foreground">
-                                    floor {floor!.toFixed(2)}
-                                  </span>
-                                </>
-                              )}
-                            </TableCell>
-                          )
-                        })
-                      )}
                     </TableRow>
                   )
                 })}
@@ -807,7 +748,7 @@ function ReadOnlyProduct({ product }: { product: Product | null }) {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Variants and prices</CardTitle>
+          <CardTitle className="text-base">Variants</CardTitle>
         </CardHeader>
         <CardContent className="overflow-x-auto p-0">
           <Table>
@@ -816,7 +757,6 @@ function ReadOnlyProduct({ product }: { product: Product | null }) {
                 <TableHead className="min-w-[12rem]">Variant</TableHead>
                 <TableHead className="min-w-[16rem]">SKU</TableHead>
                 <TableHead className="min-w-[10rem]">Available</TableHead>
-                <TableHead className="min-w-[16rem]">Prices</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -826,11 +766,6 @@ function ReadOnlyProduct({ product }: { product: Product | null }) {
                   <TableCell className="font-mono text-xs">{variant.sku}</TableCell>
                   <TableCell className="tabular-nums">
                     {variant.stock.reduce((sum, item) => sum + item.quantity_available, 0)}
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {variant.prices
-                      .map((price) => `${price.unit_price.toFixed(2)} ${price.currency_code}`)
-                      .join(" · ") || "—"}
                   </TableCell>
                 </TableRow>
               ))}
