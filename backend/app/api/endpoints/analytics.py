@@ -124,14 +124,17 @@ async def read_alert_counts(
     response_model=AlertCounts,
     dependencies=[Depends(require_manager)],
 )
-async def run_sweep(db: AsyncSession = Depends(get_db)) -> Any:
+async def run_sweep(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Any:
     """Runs the detection now rather than waiting for the hourly schedule.
 
     Same function the scheduler calls - there is one implementation of the
     rules, not a manual copy that drifts.
     """
     await health_service.sweep(db)
-    return await read_alert_counts(db=db)
+    return await read_alert_counts(db=db, current_user=current_user)
 
 
 @router.post(
