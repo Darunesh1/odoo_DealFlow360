@@ -114,6 +114,20 @@ class Settings(BaseSettings):
         """Constructs the Redis connection URL."""
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
+    # Gemini ranking for the upsell panel (Optional)
+    #
+    # Unset, the panel keeps its own margin-and-pairing ordering and shows no
+    # rationale. It is never a hard dependency of the suggestions route: a slow
+    # or failing ranking falls back to that same ordering.
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.5-flash"
+    # Budget for the whole call. The panel sits on the critical path of a screen
+    # a rep refetches on every line change, so this is deliberately short - a
+    # slow ranking is worse than no ranking.
+    GEMINI_TIMEOUT_SECONDS: float = 4.0
+    # Kill switch that does not require deleting the key.
+    AI_SUGGESTIONS_ENABLED: bool = True
+
     @property
     def smtp_configured(self) -> bool:
         """True once all four SMTP values are present.
@@ -125,6 +139,15 @@ class Settings(BaseSettings):
         return all(
             [self.SMTP_HOST, self.SMTP_PORT, self.SMTP_USER, self.SMTP_PASSWORD]
         )
+
+    @property
+    def ai_ranking_configured(self) -> bool:
+        """True when the upsell panel may ask Gemini to re-rank.
+
+        One gate, like `smtp_configured`: the key being absent and the feature
+        being switched off are the same thing to every caller.
+        """
+        return bool(self.GEMINI_API_KEY) and self.AI_SUGGESTIONS_ENABLED
 
 
 settings = Settings()
