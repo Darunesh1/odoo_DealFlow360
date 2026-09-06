@@ -1064,6 +1064,8 @@ export interface UpsellSuggestion {
   promotion_label: string | null
   is_recurring: boolean
   reason: string
+  /** One line from the AI ranker, or null when it did not run. */
+  rationale: string | null
 }
 
 export interface QuotationSubmitResponse {

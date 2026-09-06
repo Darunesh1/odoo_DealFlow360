@@ -181,6 +181,7 @@ class UpsellSuggestion(BaseModel):
     promotion_label: Optional[str] = None
     is_recurring: bool
     reason: str
+    rationale: Optional[str] = None
 
 
 class QuotationCreate(BaseModel):

@@ -122,9 +122,10 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: Optional[str] = None
     GEMINI_MODEL: str = "gemini-2.5-flash"
     # Budget for the whole call. The panel sits on the critical path of a screen
-    # a rep refetches on every line change, so this is deliberately short - a
-    # slow ranking is worse than no ranking.
-    GEMINI_TIMEOUT_SECONDS: float = 4.0
+    # a rep refetches on every line change, so a slow ranking is worse than no
+    # ranking. Measured at ~2.5s for fifteen candidates with thinking off, so
+    # this leaves headroom without letting a stall hold the panel.
+    GEMINI_TIMEOUT_SECONDS: float = 6.0
     # Kill switch that does not require deleting the key.
     AI_SUGGESTIONS_ENABLED: bool = True
 

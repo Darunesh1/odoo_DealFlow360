@@ -59,6 +59,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down FastAPI application...")
     from app.core.database import engine
     from app.core.redis import close_redis
+    from app.services.ai_ranking_service import close_client
+
+    await close_client()
 
     await engine.dispose()
     await close_redis()

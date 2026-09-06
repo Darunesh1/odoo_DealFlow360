@@ -57,6 +57,15 @@ export function UpsellPanel({
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{suggestion.name}</p>
                   <p className="text-xs text-muted-foreground">{suggestion.reason}</p>
+                  {suggestion.rationale ? (
+                    // Kept visually distinct from `reason` above it: that one is
+                    // provenance the catalogue vouches for, this one is a model's
+                    // opinion about this particular deal.
+                    <p className="mt-1 flex items-start gap-1 text-xs italic text-muted-foreground">
+                      <SparklesIcon className="mt-0.5 size-3 shrink-0 text-brass" />
+                      <span>{suggestion.rationale}</span>
+                    </p>
+                  ) : null}
                 </div>
                 <Button
                   variant="ghost"
