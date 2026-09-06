@@ -11,6 +11,7 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
 } from "@/components/ui/command"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -122,7 +123,10 @@ export function CustomerPicker({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    // `modal` matters: this popover opens from inside a Dialog, and without it
+    // the portal lands outside the dialog's scroll lock, which swallows every
+    // wheel event over the list and makes a 300-row picker look frozen.
+    <Popover open={open} onOpenChange={setOpen} modal>
       <PopoverTrigger asChild>
         <Button
           type="button"
@@ -145,17 +149,24 @@ export function CustomerPicker({
             value={name}
             onValueChange={setName}
           />
-          <CommandList>
-            <CommandEmpty>
-              <button
-                type="button"
-                className="w-full px-2 py-1.5 text-left text-sm hover:text-foreground"
-                onClick={() => setCreating(true)}
-              >
-                No match. <span className="underline">Add a new customer</span>
-              </button>
-            </CommandEmpty>
+          <CommandList className="max-h-64">
             <CommandGroup>
+              <CommandItem
+                // forceMount so it survives the filter: the moment you most
+                // want "add a new customer" is when your search matched nobody.
+                forceMount
+                value="__add_customer__"
+                onSelect={() => setCreating(true)}
+              >
+                <UserPlusIcon className="size-4" />
+                {name.trim() ? `Add "${name.trim()}"` : "Add a new customer"}
+              </CommandItem>
+            </CommandGroup>
+            <CommandSeparator />
+            <CommandEmpty className="px-3 py-4 text-sm text-muted-foreground">
+              No customer matches that.
+            </CommandEmpty>
+            <CommandGroup heading="Customers">
               {customers.map((customer) => (
                 <CommandItem
                   key={customer.id}
@@ -179,12 +190,6 @@ export function CustomerPicker({
                   ) : null}
                 </CommandItem>
               ))}
-            </CommandGroup>
-            <CommandGroup>
-              <CommandItem onSelect={() => setCreating(true)}>
-                <UserPlusIcon className="size-4" />
-                Add a new customer
-              </CommandItem>
             </CommandGroup>
           </CommandList>
         </Command>
