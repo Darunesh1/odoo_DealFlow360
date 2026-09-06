@@ -213,10 +213,13 @@ variants), a tier ceiling changed or a tier added or deleted (all), a currency r
 currency added or deleted (all). Prices are stored rather than converted on read so resolution stays
 one indexed lookup and repricing is always an explicit, visible rebuild.
 
-A consequence worth knowing: **a tier's percentage does two jobs** — it is the standing discount
-baked into that tier's prices *and* the ceiling a rep may discount further before a line flags. The
-two stay coherent because `recalculate_quotation` measures the rep's discount against the
-already-tier-adjusted `unit_price`, so a Gold quote starts at zero points over, not fifteen.
+**A tier's percentage is a ceiling, and nothing else.** It used to do two jobs — the discount baked
+into that tier's prices *and* the discount a rep could still give — which double-discounted every
+quote: a Gold line at its 15% ceiling was 29% off list while the quotation reported 15%. So
+`variant_prices` now stores the converted **list** price, identical across tiers, and the tier only
+caps what a rep may take off. The tier stays in the key because the row is what
+`resolve_variant_price` looks up, and the per-tier *floor* (list × (1 − ceiling)) is what the price
+matrices show alongside the list.
 
 **Nothing half-configured can be saved.** `variant_service.save_variant_matrix` rejects the whole
 batch, naming the SKU, unless every row has `unit_cost > 0`, `base_price > 0`, and — for a
@@ -270,15 +273,29 @@ warehouse holding stock or backing a quoted line, a product on a quotation line.
 ## Discount governance
 
 `recalculate_quotation` measures each line against the **stricter of** its customer tier ceiling and
-its category ceiling, snapshotting both onto the line. The blended score follows spec §10:
+its category ceiling, snapshotting both onto the line. `over_by_points` is a generated column
+(`GREATEST(discount_percent - allowed_discount_percent, 0)`), so the service writes only the inputs.
+
+The blended score has **four components**, weighted in `core/config.py` so none can dominate:
 
 ```
-worst    = max(over_by_points)
-weighted = Σ(over_by_points × line_net) / Σ(line_net)    # revenue-weighted, not per-unit
-score    = min(100, 8 × worst + 5 × weighted)
+severity = max(over_by_points)                          × 3
+spread   = Σ(over × line_net) / Σ(line_net)             × 2     revenue-weighted
+exposure = Σ(over/100 × line_net), in the base currency × 25    capped at RISK_EXPOSURE_FULL
+breadth  = lines_over / lines_counted                   × 10
+score    = min(100, the sum)
 ```
 
-Bands: 0 → `none`, <15 → `low`, <45 → `medium`, else `high`. **Routing is read from
+It used to be `8 × severity + 5 × spread`, which on a single-line quotation collapses to
+`13 × points_over` — 3.5 points over was already `high` and pulled Finance in, 7.7 points hit the
+cap, and quantity cancels out of a weighted mean, so a 1-unit and a 500-unit line at the same
+discount scored the same. **`exposure` is what makes deal size count**, and it is the honest signal:
+literally the money being given away above policy. It is converted to the base currency first,
+because one threshold cannot be compared against a multi-currency price list.
+
+Bands: 0 → `none`, <15 → `low`, <45 → `medium`, else `high`. Roughly: 2 points over on a small line
+scores ~20, the same breach on a $200k line ~40 (both Manager), 8 points over ~50 and 12 points over
+on a large order ~95 (both Manager then Finance). **Routing is read from
 `approval_rules` / `approval_rule_steps`** by `approval_service.resolve_rule` and *copied* onto the
 approval at submit time, so an admin editing a rule cannot rewrite an in-flight chain. Bands are
 half-open (`min_score <= score < max_score`, NULL max unbounded) so adjacent rules meeting at 45
@@ -295,7 +312,10 @@ cannot both match. The seeded chains:
 ## Line entry does not gate on stock
 
 `_allocate_stock_line` records the likeliest source warehouse and the *total* available, and
-**never refuses a short line**. An order no single warehouse can cover is exactly what the
+**never refuses a short line**. Availability is `None` when the variant has no stock rows **at all**
+and `0` when it has rows that are empty — "not stocked" versus "out of stock". Collapsing the two
+made every subscription line announce "Only 0 in stock, the rest backorders", which `plan_split`
+then contradicted by skipping recurring lines entirely. An order no single warehouse can cover is exactly what the
 warehouse-split feature exists for, and backordering is a first-class state; refusing at entry would
 make both unreachable, and would also block services and subscriptions, which carry no stock rows at
 all.
