@@ -31,7 +31,8 @@ from app.services.catalog_service import (
     list_stock_for_variant,
 )
 from app.services import approval_service, audit_service
-from app.services.pricing_service import resolve_variant_price
+from app.core.config import settings
+from app.services.pricing_service import convert, resolve_variant_price
 from app.services.user_service import apply_roles, create_invited_user, get_user_by_email
 from app.tasks.email_tasks import send_customer_portal_email
 
@@ -336,11 +337,33 @@ async def _next_position(db: AsyncSession, quotation_id: uuid.UUID) -> int:
     return int(result.scalar_one()) + 1
 
 
+async def _to_base(db: AsyncSession, amount: Decimal, currency_code: str) -> Decimal:
+    """An amount in the quote's currency, expressed in the base currency.
+
+    The exposure threshold is a single number, so the amounts it is compared
+    against have to share a unit - 5,000 of an unspecified currency would mean
+    nothing on a multi-currency price list.
+    """
+    if not amount:
+        return Decimal("0")
+    from app.services.catalog_service import list_currencies
+
+    currencies = list(await list_currencies(db))
+    source = next((c for c in currencies if c.code == currency_code), None)
+    base = next((c for c in currencies if c.is_base), None)
+    if source is None or base is None:
+        return amount
+    return convert(amount, source, base)
+
+
 async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quotation:
     customer = await get_customer_by_id(db, quotation.customer_id)
     if not customer:
         raise ValueError("Customer not found")
 
+    exposure = Decimal("0")
+    lines_counted = 0
+    lines_over = 0
     subtotal = Decimal("0")
     discount_total = Decimal("0")
     tax_total = Decimal("0")
@@ -413,6 +436,12 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
         subtotal_net += line_net
         max_over = max(max_over, over)
         weighted_over += over * line_net
+        # The money actually being given away above policy, in the quote's
+        # currency. This is what makes deal size count.
+        exposure += over / Decimal("100") * line_net
+        lines_counted += 1
+        if over > 0:
+            lines_over += 1
 
     quotation.customer_tier_id = customer.tier_id
     quotation.tier_max_discount_percent = float(customer.tier.max_discount_percent)
@@ -421,10 +450,37 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
     quotation.tax_total = _money(tax_total)
     quotation.total = _money(total)
     quotation.margin_total = _money(margin_total)
-    # Spec section 10: the worst single line AND the pattern across the order.
-    # net_base is the discounted revenue the weighting divides by.
+    # Spec section 10, in four parts. The old score was
+    # `8 x worst + 5 x weighted`, and on a single-line quotation the weighted
+    # term equals the worst term - so it collapsed to 13 x points_over. Three
+    # and a half points over the ceiling was already HIGH, seven and a half hit
+    # the cap, and quantity cancelled out of a weighted mean entirely: a 1-unit
+    # line and a 500-unit line at the same discount scored the same. "Slightly
+    # over" and "wildly over on a huge order" were indistinguishable, so the
+    # routing between Manager and Manager-then-Finance meant nothing.
+    #
+    #   severity  how far the worst single line is over
+    #   spread    the revenue-weighted average breach
+    #   exposure  the money given away above policy, the size signal
+    #   breadth   one slip, or a pattern across the order
     weighted_mean = (weighted_over / subtotal_net) if subtotal_net else Decimal("0")
-    score = min(Decimal("100"), Decimal("8") * max_over + Decimal("5") * weighted_mean)
+    exposure_in_base = await _to_base(db, exposure, quotation.currency)
+    exposure_full = Decimal(str(settings.RISK_EXPOSURE_FULL))
+    exposure_ratio = (
+        min(Decimal("1"), exposure_in_base / exposure_full)
+        if exposure_full > 0
+        else Decimal("0")
+    )
+    breadth = (
+        Decimal(lines_over) / Decimal(lines_counted) if lines_counted else Decimal("0")
+    )
+    score = min(
+        Decimal("100"),
+        Decimal(str(settings.RISK_WEIGHT_SEVERITY)) * max_over
+        + Decimal(str(settings.RISK_WEIGHT_SPREAD)) * weighted_mean
+        + Decimal(str(settings.RISK_WEIGHT_EXPOSURE)) * exposure_ratio
+        + Decimal(str(settings.RISK_WEIGHT_BREADTH)) * breadth,
+    )
     quotation.max_line_over_points = float(max_over)
     quotation.weighted_over_points = float(weighted_mean)
     quotation.blended_risk_score = float(score)

@@ -114,6 +114,21 @@ class Settings(BaseSettings):
         """Constructs the Redis connection URL."""
         return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/0"
 
+    # --- Discount risk scoring -------------------------------------------- #
+    # The blended score is severity + spread + exposure + breadth, each weight
+    # capped so none can dominate. They add to 100.
+    #
+    # The old score was `8 x worst + 5 x weighted`, which on a single-line quote
+    # collapsed to 13 x points_over - so 3.5 points over the ceiling was already
+    # HIGH and deal size never entered it at all.
+    RISK_WEIGHT_SEVERITY: float = 3.0
+    RISK_WEIGHT_SPREAD: float = 2.0
+    RISK_WEIGHT_EXPOSURE: float = 25.0
+    RISK_WEIGHT_BREADTH: float = 10.0
+    # Money given away above policy, in the base currency, at which the exposure
+    # component is full marks. Tune this to the size of a typical deal.
+    RISK_EXPOSURE_FULL: float = 5000.0
+
     # Gemini ranking for the upsell panel (Optional)
     #
     # Unset, the panel keeps its own margin-and-pairing ordering and shows no
