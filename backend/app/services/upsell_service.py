@@ -176,6 +176,23 @@ def _min_margin_percent() -> float:
     return float(getattr(settings, "MIN_UPSELL_MARGIN_PERCENT", DEFAULT_MIN_MARGIN_PERCENT))
 
 
+async def _cost_factor(db: AsyncSession, currency_code: str) -> Decimal:
+    """What multiplies a base-currency cost into this quote's currency.
+
+    `product_variants.unit_cost` is typed in the base currency and every
+    resolved price is in the quote's, so every margin comparison needs this.
+    One scalar rather than a join: it is the same number for every row.
+    """
+    from app.services.catalog_service import list_currencies
+
+    currencies = list(await list_currencies(db))
+    target = next((c for c in currencies if c.code == currency_code), None)
+    base = next((c for c in currencies if c.is_base), None)
+    if target is None or base is None or not target.rate_to_base:
+        return Decimal("1")
+    return Decimal(str(base.rate_to_base)) / Decimal(str(target.rate_to_base))
+
+
 async def _pairing_weights(
     db: AsyncSession, product_ids: set[uuid.UUID]
 ) -> dict[uuid.UUID, tuple[float, str, bool]]:
@@ -344,6 +361,7 @@ async def _priced_pool(
     exclude: set[uuid.UUID],
     pairing_ids: list[uuid.UUID],
     affinity: list[str],
+    cost_factor: Decimal,
 ) -> list[dict]:
     """Every suggestible product, already priced for this quote, in one query.
 
@@ -353,7 +371,11 @@ async def _priced_pool(
     survivable at five candidates and would not have been at sixty.
     """
     unit_price = VariantPrice.unit_price
-    unit_cost = ProductVariant.unit_cost
+    # `unit_cost` is typed in the base currency while `unit_price` resolves in
+    # the quote's, so the cost has to be brought across before they meet -
+    # otherwise the margin floor lets low-margin products through on any quote
+    # that is not in the base currency.
+    unit_cost = ProductVariant.unit_cost * cost_factor
     margin = unit_price - unit_cost
 
     inner = (
@@ -569,7 +591,7 @@ def _rank_deterministic(
 
 
 async def _upsell_candidates(
-    db: AsyncSession, quotation: Quotation
+    db: AsyncSession, quotation: Quotation, cost_factor: Decimal
 ) -> list[Suggestion]:
     """Better versions of what is already on the quote.
 
@@ -589,7 +611,7 @@ async def _upsell_candidates(
         return []
 
     unit_price = VariantPrice.unit_price
-    unit_cost = ProductVariant.unit_cost
+    unit_cost = ProductVariant.unit_cost * cost_factor
     margin = unit_price - unit_cost
 
     rows = (
@@ -699,6 +721,7 @@ async def _build(
     pairings = await _pairing_weights(db, on_quote)
     affinity = _category_demand(quotation)
     customer = await _customer_history(db, quotation.customer_id)
+    cost_factor = await _cost_factor(db, quotation.currency)
 
     pool = await _priced_pool(
         db,
@@ -706,6 +729,7 @@ async def _build(
         exclude=exclude | on_quote,
         pairing_ids=list(pairings),
         affinity=list(affinity.demand),
+        cost_factor=cost_factor,
     )
     ranked = _rank_deterministic(
         pool, pairings, affinity, customer, _line_tokens(quotation)
@@ -716,7 +740,7 @@ async def _build(
     # construction, and asking a model to re-argue that only risks it dropping
     # one. They are prepended, so the panel leads with "you could sell more of
     # what they already want".
-    upsells = await _upsell_candidates(db, quotation)
+    upsells = await _upsell_candidates(db, quotation, cost_factor)
 
     if not ranked:
         return upsells

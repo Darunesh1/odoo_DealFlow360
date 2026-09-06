@@ -337,23 +337,30 @@ async def _next_position(db: AsyncSession, quotation_id: uuid.UUID) -> int:
     return int(result.scalar_one()) + 1
 
 
-async def _to_base(db: AsyncSession, amount: Decimal, currency_code: str) -> Decimal:
-    """An amount in the quote's currency, expressed in the base currency.
+def _cost_in(amount, base_currency, target_currency) -> Decimal:
+    """A base-currency cost expressed in the quote's currency."""
+    value = Decimal(str(amount or 0))
+    if not value or base_currency is None or target_currency is None:
+        return value
+    return convert(value, base_currency, target_currency)
 
-    The exposure threshold is a single number, so the amounts it is compared
-    against have to share a unit - 5,000 of an unspecified currency would mean
-    nothing on a multi-currency price list.
+
+async def _currency_pair(db: AsyncSession, currency_code: str):
+    """This quote's currency and the base one, read once per recalculation.
+
+    Two conversions need them. A variant's `unit_cost` is typed in the base
+    currency while the line is denominated in the quote's, so margin has to
+    bring the cost across or it subtracts dollars from rupees. And the risk
+    exposure threshold is a single number, so the amounts compared against it
+    have to share a unit.
     """
-    if not amount:
-        return Decimal("0")
     from app.services.catalog_service import list_currencies
 
     currencies = list(await list_currencies(db))
-    source = next((c for c in currencies if c.code == currency_code), None)
-    base = next((c for c in currencies if c.is_base), None)
-    if source is None or base is None:
-        return amount
-    return convert(amount, source, base)
+    return (
+        next((c for c in currencies if c.code == currency_code), None),
+        next((c for c in currencies if c.is_base), None),
+    )
 
 
 async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quotation:
@@ -361,6 +368,7 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
     if not customer:
         raise ValueError("Customer not found")
 
+    quote_currency, base_currency = await _currency_pair(db, quotation.currency)
     exposure = Decimal("0")
     lines_counted = 0
     lines_over = 0
@@ -390,7 +398,13 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
         )
         allowed = min(tier_limit, category_limit)
         variant = await get_variant_by_id(db, line.variant_id)
-        unit_cost = Decimal(str(variant.unit_cost)) if variant else Decimal("0")
+        # `unit_cost` is typed in the base currency; the line is priced in the
+        # quote's. Subtracting one from the other without converting reported a
+        # 15% margin as 88% on any quote not in the base currency - and the same
+        # number gates the upsell panel and is snapshotted into sales_records.
+        unit_cost = _cost_in(
+            variant.unit_cost if variant else 0, base_currency, quote_currency
+        )
         resolved = await resolve_variant_price(
             db,
             variant_id=line.variant_id,
@@ -464,7 +478,11 @@ async def recalculate_quotation(db: AsyncSession, quotation: Quotation) -> Quota
     #   exposure  the money given away above policy, the size signal
     #   breadth   one slip, or a pattern across the order
     weighted_mean = (weighted_over / subtotal_net) if subtotal_net else Decimal("0")
-    exposure_in_base = await _to_base(db, exposure, quotation.currency)
+    exposure_in_base = (
+        convert(exposure, quote_currency, base_currency)
+        if exposure and quote_currency and base_currency
+        else exposure
+    )
     exposure_full = Decimal(str(settings.RISK_EXPOSURE_FULL))
     exposure_ratio = (
         min(Decimal("1"), exposure_in_base / exposure_full)

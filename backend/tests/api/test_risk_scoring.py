@@ -14,6 +14,8 @@ in `core/config.py` can be tuned without rewriting the suite.
 
 from datetime import date, timedelta
 
+import pytest
+
 from app.models.catalog import Currency
 from app.models.quotation import RiskBand
 from app.models.user import Role
@@ -162,3 +164,73 @@ async def test_the_score_does_not_saturate_on_a_small_breach(db_session):
 
     assert quotation.blended_risk_score < 45
     assert quotation.risk_band == RiskBand.MEDIUM
+
+
+# --------------------------------------------------------------------------- #
+# Margin has to mean the same thing in every currency
+# --------------------------------------------------------------------------- #
+
+
+async def test_margin_is_the_same_percentage_in_any_currency(db_session):
+    """`unit_cost` is typed in the base currency; the line is priced in the
+    quote's. Subtracting one from the other without converting reported a 15%
+    margin as 88% on an INR quote, and the same number gates the upsell panel
+    and is snapshotted into sales_records.
+    """
+    from app.models.catalog import Currency
+
+    db_session.add(
+        Currency(code="USD", name="US Dollar", symbol="$", rate_to_base=1, is_base=True)
+    )
+    db_session.add(
+        Currency(code="INR", name="Indian Rupee", symbol="₹", rate_to_base=0.011)
+    )
+    await db_session.commit()
+
+    tier = await catalog_service.create_customer_tier(
+        db_session, CustomerTierCreate(name="Gold", max_discount_percent=15)
+    )
+    product = await catalog_service.create_product(
+        db_session, ProductCreate(name="Cable Kit", category="Accessories", has_variants=False)
+    )
+    variant = product.variants[0]
+    await variant_service.save_variant_matrix(
+        db_session,
+        product,
+        [VariantRowInput(id=variant.id, sku="SKU-CABLE", unit_cost=44.16, base_price=66.25)],
+    )
+    product = await catalog_service.get_product_by_id(db_session, product.id)
+    owner = await make_user(db_session, "rep@example.com", roles=[Role.SALES_REP])
+
+    percentages = {}
+    for index, code in enumerate(("USD", "INR")):
+        customer = await catalog_service.create_customer(
+            db_session,
+            CustomerCreate(
+                name=f"Buyer {code}", tier_id=tier.id, contact_email=f"b{index}@example.com"
+            ),
+        )
+        quotation = await quotation_service.create_draft_quotation(
+            db_session,
+            owner=owner,
+            obj_in=QuotationCreate(
+                customer_id=customer.id,
+                currency=code,
+                requested_delivery_date=date.today() + timedelta(days=14),
+            ),
+        )
+        quotation = await quotation_service.add_line(
+            db_session,
+            quotation,
+            QuotationLineCreate(
+                variant_id=product.variants[0].id, quantity=30, line_discount_percent=19
+            ),
+        )
+        percentages[code] = quotation.margin_total / quotation.total * 100
+
+    assert percentages["USD"] == pytest.approx(percentages["INR"], abs=0.01), (
+        "the same deal cannot have two different margins because of its currency"
+    )
+    # 66.25 less 19% is 53.66 against a 44.16 cost, so roughly a sixth of the
+    # total once 0% tax is added - nothing like the 88% the bug reported.
+    assert 10 < percentages["USD"] < 25
