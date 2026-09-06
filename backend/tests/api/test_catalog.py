@@ -68,8 +68,13 @@ async def test_generate_variants_is_idempotent(db_session):
     assert {variant.sku for variant in again.variants} == skus
 
 
-async def test_tier_prices_are_calculated_from_cost_and_price(db_session):
-    """One cost and one price in the base currency drive the whole grid."""
+async def test_the_stored_price_is_the_list_price_not_a_tier_discount(db_session):
+    """One price in the base currency drives the whole grid, converted only.
+
+    The tier used to discount this number as well as capping the rep, so a Gold
+    line at its ceiling was 29% off list while the quote reported 15%. The tier
+    is now only a ceiling: every tier sees the same list.
+    """
     await _currencies(db_session)
     await _tier(db_session, "Bronze", 5)
     await _tier(db_session, "Silver", 10)
@@ -96,14 +101,15 @@ async def test_tier_prices_are_calculated_from_cost_and_price(db_session):
     )
 
     prices = await _prices(db_session, variant.id)
-    assert prices[("Bronze", "USD")] == 950
-    assert prices[("Silver", "USD")] == 900
-    assert prices[("Gold", "USD")] == 850
-    # 850 USD at 0.012 base-per-INR.
-    assert prices[("Gold", "INR")] == pytest.approx(70833.3333, abs=0.001)
+    assert prices[("Bronze", "USD")] == 1000
+    assert prices[("Silver", "USD")] == 1000
+    assert prices[("Gold", "USD")] == 1000, "the ceiling does not move the price"
+    # 1000 USD at 0.012 base-per-INR.
+    assert prices[("Gold", "INR")] == pytest.approx(83333.3333, abs=0.001)
 
 
-async def test_raising_a_ceiling_reprices_only_that_tier(db_session):
+async def test_raising_a_ceiling_does_not_move_the_price(db_session):
+    """The ceiling governs what a rep may give away, not what the thing costs."""
     await _currencies(db_session)
     bronze = await _tier(db_session, "Bronze", 5)
     gold = await _tier(db_session, "Gold", 15)
@@ -117,7 +123,7 @@ async def test_raising_a_ceiling_reprices_only_that_tier(db_session):
         product,
         [VariantRowInput(id=variant.id, sku=variant.sku, unit_cost=50, base_price=100)],
     )
-    assert (await _prices(db_session, variant.id))[("Gold", "USD")] == 85
+    assert (await _prices(db_session, variant.id))[("Gold", "USD")] == 100
 
     from app.schemas.customer import CustomerTierUpdate
 
@@ -125,9 +131,10 @@ async def test_raising_a_ceiling_reprices_only_that_tier(db_session):
         db_session, gold, CustomerTierUpdate(max_discount_percent=20)
     )
     prices = await _prices(db_session, variant.id)
-    assert prices[("Gold", "USD")] == 80, "the changed tier reprices"
-    assert prices[("Bronze", "USD")] == 95, "every other tier is untouched"
+    assert prices[("Gold", "USD")] == 100, "a wider ceiling is not a discount"
+    assert prices[("Bronze", "USD")] == 100
     assert bronze.max_discount_percent == 5
+    assert gold.max_discount_percent == 20, "only the ceiling moved"
 
 
 async def test_a_variant_cannot_be_saved_half_configured(db_session):
@@ -165,7 +172,7 @@ async def test_a_variant_cannot_be_saved_half_configured(db_session):
             )
         ],
     )
-    assert (await _prices(db_session, variant.id))[("Bronze", "USD")] == 95
+    assert (await _prices(db_session, variant.id))[("Bronze", "USD")] == 100
 
 
 async def test_tier_delete_is_refused_while_a_customer_is_on_it(db_session):

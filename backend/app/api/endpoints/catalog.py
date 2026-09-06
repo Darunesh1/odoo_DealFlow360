@@ -290,6 +290,7 @@ async def read_price_matrix(db: AsyncSession = Depends(get_db)) -> Any:
             ProductVariant.name,
             ProductVariant.sku,
             CustomerTier.name,
+            CustomerTier.max_discount_percent,
             VariantPrice.currency_code,
             VariantPrice.unit_price,
         )
@@ -311,8 +312,12 @@ async def read_price_matrix(db: AsyncSession = Depends(get_db)) -> Any:
             variant_name=row[3],
             sku=row[4],
             tier_name=row[5],
-            currency_code=row[6],
-            unit_price=float(row[7]),
+            max_discount_percent=float(row[6]),
+            currency_code=row[7],
+            unit_price=float(row[8]),
+            # The floor, not a second price: what the list allows a rep on this
+            # tier to sell it down to.
+            floor_price=round(float(row[8]) * (1 - float(row[6]) / 100), 2),
         )
         for row in (await db.execute(stmt)).all()
     ]

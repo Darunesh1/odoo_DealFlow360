@@ -164,12 +164,20 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
   const stocked = !isSubscription
 
   /** The formula, mirrored client-side so the grid fills as you type. The
-   * server recomputes it on save; this is preview, not the source of truth. */
-  const cellPrice = (basePrice: string, tier: CustomerTier, currency: Currency) => {
+   * server recomputes it on save; this is preview, not the source of truth.
+   *
+   * The tier no longer discounts the price - it caps what a rep may take off.
+   * So every tier sees the same list, and what differs is the floor. */
+  const listPrice = (basePrice: string, currency: Currency) => {
     const amount = Number(basePrice)
     if (!basePrice || !Number.isFinite(amount) || !baseCurrency) return null
-    const converted = (amount * baseCurrency.rate_to_base) / currency.rate_to_base
-    return converted * (1 - tier.max_discount_percent / 100)
+    return (amount * baseCurrency.rate_to_base) / currency.rate_to_base
+  }
+
+  /** The lowest a rep on this tier may sell it for. */
+  const floorPrice = (basePrice: string, tier: CustomerTier, currency: Currency) => {
+    const list = listPrice(basePrice, currency)
+    return list == null ? null : list * (1 - tier.max_discount_percent / 100)
   }
 
   const rowComplete = (row: MatrixRow | undefined) =>
@@ -626,6 +634,9 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                         className="min-w-[8rem] text-right"
                       >
                         {tier.name} {currency.code}
+                        <span className="block text-[11px] font-normal text-muted-foreground">
+                          list · floor at {tier.max_discount_percent}%
+                        </span>
                       </TableHead>
                     ))
                   )}
@@ -716,13 +727,23 @@ export default function ProductDetailPage({ readOnly = false }: { readOnly?: boo
                       )}
                       {tiers.flatMap((tier) =>
                         currencies.map((currency) => {
-                          const value = cellPrice(row?.basePrice ?? "", tier, currency)
+                          const list = listPrice(row?.basePrice ?? "", currency)
+                          const floor = floorPrice(row?.basePrice ?? "", tier, currency)
                           return (
                             <TableCell
                               key={`${tier.id}-${currency.code}`}
-                              className="text-right tabular-nums text-muted-foreground"
+                              className="text-right tabular-nums"
                             >
-                              {value == null ? "—" : value.toFixed(2)}
+                              {list == null ? (
+                                "—"
+                              ) : (
+                                <>
+                                  <span className="block">{list.toFixed(2)}</span>
+                                  <span className="block text-xs text-muted-foreground">
+                                    floor {floor!.toFixed(2)}
+                                  </span>
+                                </>
+                              )}
                             </TableCell>
                           )
                         })

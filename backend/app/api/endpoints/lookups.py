@@ -99,6 +99,7 @@ async def read_products(db: AsyncSession = Depends(get_db)) -> Any:
                         sku=variant.sku,
                         name=variant.name,
                         is_active=variant.is_active,
+                        available_quantity=variant.available_quantity,
                     )
                     for variant in product.variants
                     if variant.is_active

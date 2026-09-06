@@ -73,7 +73,7 @@ async def _allocate_stock_line(
     *,
     variant_id: uuid.UUID,
     quantity: int,
-) -> tuple[Optional[uuid.UUID], Optional[str], Optional[str], Optional[str], int]:
+) -> tuple[Optional[uuid.UUID], Optional[str], Optional[str], Optional[str], Optional[int]]:
     """Note the likeliest source warehouse and what is available in total.
 
     Deliberately does NOT refuse a short line. A 24-unit order that no single
@@ -81,8 +81,17 @@ async def _allocate_stock_line(
     warehouses, and the backorder when even the total is short, belong to
     fulfillment. Refusing here would make both unreachable, and would also
     block services and subscriptions, which carry no stock at all.
+
+    Availability is **None when the variant has no stock rows at all** and 0
+    when it has rows that are empty. That distinction is the difference between
+    "not stocked" - a plan or a service, which will never ship from a warehouse
+    - and "out of stock". Collapsing them made every subscription line announce
+    "Only 0 in stock, the rest backorders", which `plan_split` then contradicted
+    by skipping the line entirely.
     """
     stock_items = await list_stock_for_variant(db, variant_id)
+    if not stock_items:
+        return None, None, None, None, None
     total_available = sum(int(item.quantity_available) for item in stock_items)
     # Richest first (list_stock_for_variant orders by availability), so the
     # snapshot names the warehouse the planner will most likely pick.
@@ -108,7 +117,7 @@ def _apply_stock_snapshot(
     warehouse_name: str,
     warehouse_code: str,
     warehouse_bin_location: Optional[str],
-    stock_available_at_entry: int,
+    stock_available_at_entry: Optional[int],
 ) -> None:
     line.warehouse_id = warehouse_id
     line.warehouse_name = warehouse_name

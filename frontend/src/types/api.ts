@@ -223,6 +223,8 @@ export interface PickerVariant {
   sku: string
   name: string
   is_active: boolean
+  /** Subscriptions only: total licences sellable. null on a physical variant. */
+  available_quantity: number | null
 }
 
 export interface PickerProduct {
@@ -277,8 +279,12 @@ export interface PriceMatrixRow {
   variant_name: string
   sku: string
   tier_name: string
+  /** The most a rep on this tier may take off. */
+  max_discount_percent: number
   currency_code: string
   unit_price: number
+  /** unit_price less the tier's ceiling: the lowest a rep may sell at. */
+  floor_price: number
 }
 
 export interface Warehouse {

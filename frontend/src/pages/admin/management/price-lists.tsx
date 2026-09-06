@@ -239,7 +239,8 @@ export default function PriceListsTab() {
             <CardTitle className="text-base">Price matrix</CardTitle>
             <CardDescription>
               Every SKU at every tier and currency. Read only, and calculated: the unit
-              price on the product, converted, less that tier&apos;s discount.
+              price on the product, converted. The tier does not change it - it
+              caps how far a rep may discount, which is the floor column.
             </CardDescription>
           </div>
           <div className="relative max-w-sm">
@@ -308,7 +309,17 @@ export default function PriceListsTab() {
                   onSort={sort.toggle}
                   className="min-w-[9rem]"
                 >
-                  Price
+                  List price
+                </SortableHeader>
+                <TableHead className="min-w-[7rem] text-right">Max off</TableHead>
+                <SortableHeader
+                  column="floor_price"
+                  active={sort.sortKey}
+                  direction={sort.direction}
+                  onSort={sort.toggle}
+                  className="min-w-[9rem]"
+                >
+                  Floor
                 </SortableHeader>
               </TableRow>
             </TableHeader>
@@ -323,12 +334,18 @@ export default function PriceListsTab() {
                   <TableCell className="text-right tabular-nums">
                     {row.unit_price.toFixed(2)}
                   </TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                    {row.max_discount_percent}%
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-muted-foreground">
+                    {row.floor_price.toFixed(2)}
+                  </TableCell>
                 </TableRow>
               ))}
               {sort.sorted.length > visible.length && (
                 <TableRow>
                   <TableCell
-                    colSpan={7}
+                    colSpan={8}
                     className="text-center text-sm text-muted-foreground"
                   >
                     Showing {visible.length} of {sort.sorted.length} rows. Search
@@ -338,7 +355,7 @@ export default function PriceListsTab() {
               )}
               {!filtered.length && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-sm text-muted-foreground">
+                  <TableCell colSpan={8} className="text-sm text-muted-foreground">
                     No prices match.
                   </TableCell>
                 </TableRow>

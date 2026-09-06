@@ -187,6 +187,8 @@ export default function QuotationDetailPage() {
                 <ProductPicker
                   products={products.data ?? []}
                   disabled={mutations.addLine.isPending || mutations.updateLine.isPending}
+                  tierName={quotation.customer_tier?.name}
+                  maxDiscountPercent={quotation.customer_tier?.max_discount_percent}
                   onAdd={({ variantId, quantity, discount }) =>
                     mutations.addLine.mutate({
                       variant_id: variantId,

@@ -63,12 +63,23 @@ async def rebuild_variant_prices(db: AsyncSession, *, variant_ids=None) -> int:
     """Recompute every (variant, tier, currency) price from base_price.
 
         unit_price = convert(base_price, base -> currency)
-                     x (1 - tier.max_discount_percent / 100)
+
+    **The tier does not discount the price.** It used to: the stored number was
+    the converted base less that tier's `max_discount_percent`, and the rep then
+    discounted *that* again while the ceiling check measured only the rep's
+    half. A Gold line at its 15% ceiling was 29% off list while the quotation
+    reported 15%. One percentage cannot be both the discount already given and
+    the discount still allowed, so it is now only the latter - a ceiling - and
+    what is stored is the list price in each currency.
+
+    The tier stays part of the key even though it no longer changes the number:
+    the row is what `resolve_variant_price` looks up, and the per-tier *floor*
+    (list x (1 - ceiling)) is what the price matrix shows.
 
     The ONLY place a variant_prices row is written. Nothing in that table is
-    typed, so anything that feeds the formula - a variant's price, a tier's
-    ceiling, a currency's rate, a tier or currency appearing or disappearing -
-    means calling this rather than patching rows in place.
+    typed, so anything that feeds the formula - a variant's price, a currency's
+    rate, a tier or currency appearing or disappearing - means calling this
+    rather than patching rows in place.
     """
     from app.models.customer import CustomerTier
 
@@ -107,12 +118,16 @@ async def rebuild_variant_prices(db: AsyncSession, *, variant_ids=None) -> int:
 
     written = 0
     for variant in variants:
+        # Converted once per currency: the tier no longer changes the number.
+        by_currency = {
+            currency.code: quantize_unit(
+                convert(variant.base_price, base, currency)
+            )
+            for currency in currencies
+        }
         for tier in tiers:
-            keep = _dec(1) - _dec(tier.max_discount_percent) / _dec(100)
             for currency in currencies:
-                amount = quantize_unit(
-                    convert(variant.base_price, base, currency) * keep
-                )
+                amount = by_currency[currency.code]
                 row = existing.get((variant.id, tier.id, currency.code))
                 if row is None:
                     db.add(

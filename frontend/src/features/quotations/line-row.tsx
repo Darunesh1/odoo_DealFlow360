@@ -72,7 +72,11 @@ export function LineRow({
     queue({ quantity: String(Math.max(1, (Number(quantity) || 1) + delta)) })
 
   const over = line.over_by_points > 0
+  // A plan is capped, not stocked: it has licences and no stock rows, and
+  // `plan_split` skips recurring lines entirely. Warning that one "backorders"
+  // contradicted the fulfillment engine on every subscription line.
   const shortStock =
+    !line.is_recurring &&
     line.stock_available_at_entry !== null &&
     line.stock_available_at_entry < line.quantity
 
@@ -137,7 +141,9 @@ export function LineRow({
           <Input
             type="number"
             min={0}
-            max={100}
+            // The ceiling, not 100. The server still governs, but the box
+            // should not invite a number it is going to flag.
+            max={line.allowed_discount_percent}
             step="0.5"
             value={discount}
             onChange={(event) => queue({ discount: event.target.value })}

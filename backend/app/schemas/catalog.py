@@ -201,6 +201,11 @@ class PickerVariant(BaseModel):
     sku: str
     name: str
     is_active: bool = True
+    # Subscriptions only: how many licences may be sold in total. NULL on a
+    # physical variant, where the per-warehouse rows are the real answer. The
+    # picker shows it so a rep learns the cap before `_check_plan_capacity`
+    # refuses the line.
+    available_quantity: Optional[int] = None
 
 
 class PickerProduct(BaseModel):
@@ -308,8 +313,13 @@ class PriceMatrixRow(BaseModel):
     variant_name: str
     sku: str
     tier_name: str
+    # The most a rep on this tier may take off, and the lowest price that
+    # allows. The tier used to discount `unit_price` itself, which meant the
+    # rep's discount landed on an already-discounted number.
+    max_discount_percent: float = 0
     currency_code: str
     unit_price: float
+    floor_price: float = 0
 
 
 # --------------------------------------------------------------------------- #

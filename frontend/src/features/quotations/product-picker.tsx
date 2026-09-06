@@ -37,10 +37,16 @@ import type { PickerProduct, PickerVariant } from "@/types/api"
 export function ProductPicker({
   products,
   disabled,
+  maxDiscountPercent,
+  tierName,
   onAdd,
 }: {
   products: PickerProduct[]
   disabled: boolean
+  /** This customer's tier ceiling. The rep should know it before typing, not
+   *  after the line comes back flagged. */
+  maxDiscountPercent?: number
+  tierName?: string
   onAdd: (input: { variantId: string; quantity: number; discount: number }) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -179,16 +185,31 @@ export function ProductPicker({
       </div>
 
       <div className="space-y-1.5">
-        <Label>Discount %</Label>
+        <Label>
+          Discount %
+          {maxDiscountPercent != null ? (
+            <span className="ml-1 font-normal text-muted-foreground">
+              · {tierName ? `${tierName}, ` : ""}up to {maxDiscountPercent}%
+            </span>
+          ) : null}
+        </Label>
         <Input
           type="number"
           min={0}
-          max={100}
+          // The tier ceiling when we know it. A category ceiling can still be
+          // stricter, which the server applies and the line's Limit column
+          // shows - this is the affordance, not the governance.
+          max={maxDiscountPercent ?? 100}
           step="0.5"
           value={discount}
           onChange={(event) => setDiscount(event.target.value)}
           disabled={disabled}
         />
+        {chosenVariant?.available_quantity != null ? (
+          <p className="text-xs text-muted-foreground">
+            {chosenVariant.available_quantity} licences available in total.
+          </p>
+        ) : null}
       </div>
 
       <Button onClick={submit} disabled={disabled || !chosenVariant}>
