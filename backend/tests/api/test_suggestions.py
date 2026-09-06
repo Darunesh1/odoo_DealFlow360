@@ -17,7 +17,14 @@ from app.models.user import Role
 from app.schemas.catalog import ProductCreate, VariantRowInput
 from app.schemas.customer import CustomerCreate, CustomerTierCreate
 from app.schemas.quotation import QuotationCreate, QuotationLineCreate
-from app.services import catalog_service, quotation_service, upsell_service, variant_service
+from app.models.catalog import PairingSource, ProductPairing
+from app.services import (
+    catalog_service,
+    pairing_service,
+    quotation_service,
+    upsell_service,
+    variant_service,
+)
 from tests.conftest import make_user
 
 
@@ -63,11 +70,16 @@ async def _catalogue(db, *, products: list[tuple[str, str, float, float]]):
     return tier, made
 
 
-async def _quotation(db, tier, seed_product):
-    """A draft with one line on it, owned by a rep."""
-    owner = await make_user(db, "rep@example.com", roles=[Role.SALES_REP])
+async def _quotation(db, tier, seed_product, *, email="buy@example.com"):
+    """A draft with one line on it, owned by a rep.
+
+    A distinct email means a distinct customer, which means a distinct quotation
+    id - and therefore a distinct suggestions cache key, so two quotes in one
+    test cannot read each other's panel.
+    """
+    owner = await make_user(db, f"rep-{email}", roles=[Role.SALES_REP])
     customer = await catalog_service.create_customer(
-        db, CustomerCreate(name="Northwind", tier_id=tier.id, contact_email="buy@example.com")
+        db, CustomerCreate(name=f"Northwind {email}", tier_id=tier.id, contact_email=email)
     )
     quotation = await quotation_service.create_draft_quotation(
         db,
@@ -85,6 +97,43 @@ async def _quotation(db, tier, seed_product):
             variant_id=seed_product.variants[0].id, quantity=2, line_discount_percent=0
         ),
     )
+
+
+async def _record_sale(db, quotation):
+    """What order confirmation writes, without the rest of confirmation.
+
+    `mine_co_purchases` reads `sales_records` and nothing else, so this is all a
+    mining test needs - and it keeps the test from depending on the whole
+    fulfillment path.
+    """
+    from datetime import datetime, timezone
+
+    from app.models.analytics import SalesRecord
+
+    for line in quotation.lines:
+        db.add(
+            SalesRecord(
+                quotation_id=quotation.id,
+                product_id=line.product_id,
+                product_name=line.product_name,
+                customer_id=quotation.customer_id,
+                category=line.category,
+                quantity=line.quantity,
+                unit_price=line.unit_price,
+                line_total=line.line_total,
+                sold_at=datetime.now(timezone.utc),
+            )
+        )
+    await db.commit()
+
+
+async def _pairings(db) -> dict:
+    """Every pairing as {(product, suggested): source}."""
+    from sqlalchemy import select
+
+    rows = (await db.execute(select(ProductPairing))).scalars().all()
+    return {(row.product_id, row.suggested_product_id): row.source for row in rows}
+
 
 
 async def test_a_quote_with_no_pairings_still_gets_suggestions(db_session, monkeypatch):
@@ -232,3 +281,216 @@ async def test_a_partly_useful_ranking_is_backfilled(db_session, monkeypatch):
     assert len(suggestions) == len(baseline), "the invented id is backfilled over"
     assert suggestions[0].rationale == "Protects the laptop already on the quote"
     assert all(s.rationale is None for s in suggestions[1:])
+
+
+# --------------------------------------------------------------------------- #
+# Ranking: the panel has to answer "what is on this quote", not "what is dear"
+# --------------------------------------------------------------------------- #
+
+
+async def test_different_lines_produce_different_suggestions(db_session):
+    """The complaint this change exists for.
+
+    The panel used to show the catalogue's five highest-margin products on every
+    quotation, because the sort multiplied a small tier weight by a large
+    currency margin. Two quotes with nothing in common must not agree.
+    """
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            ("Studio Dock", "Accessories", 30, 120),
+            ("Cable Kit", "Accessories", 10, 40),
+            ("Onsite Setup", "Services", 60, 300),
+            ("Core Router", "Networking", 200, 600),
+        ],
+    )
+    hardware = await _quotation(db_session, tier, made["Studio Laptop"])
+    networking = await _quotation(
+        db_session, tier, made["Core Router"], email="second@example.com"
+    )
+
+    a = [s.product_id for s in await upsell_service.suggest(db_session, hardware)]
+    b = [s.product_id for s in await upsell_service.suggest(db_session, networking)]
+
+    assert a and b
+    assert a != b, "two unrelated quotes returned the same panel"
+
+
+async def test_relevance_outranks_margin(db_session):
+    """A modest accessory for what is on the quote beats a fat unrelated margin."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            # Complements the laptop, but earns almost nothing.
+            ("Cable Kit", "Accessories", 10, 40),
+            # Nothing to do with it, and the biggest margin in the catalogue.
+            ("Core Router", "Networking", 200, 900),
+        ],
+    )
+    quotation = await _quotation(db_session, tier, made["Studio Laptop"])
+
+    names = [s.name for s in await upsell_service.suggest(db_session, quotation)]
+
+    assert names.index("Cable Kit") < names.index("Core Router")
+
+
+async def test_a_near_duplicate_of_a_line_is_not_the_top_suggestion(db_session):
+    """Another laptop beside a laptop is not a cross-sell."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            ("Pro Laptop", "Hardware", 500, 1400),
+            ("Studio Dock", "Accessories", 30, 120),
+        ],
+    )
+    quotation = await _quotation(db_session, tier, made["Studio Laptop"])
+
+    names = [s.name for s in await upsell_service.suggest(db_session, quotation)]
+
+    assert names.index("Studio Dock") < names.index("Pro Laptop")
+
+
+async def test_a_shared_adjective_is_not_a_duplicate(db_session):
+    """"Studio" is a stopword; "Laptop" is not. Pins NAME_STOPWORDS."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            ("Studio Dock", "Accessories", 30, 120),
+        ],
+    )
+    quotation = await _quotation(db_session, tier, made["Studio Laptop"])
+
+    top = (await upsell_service.suggest(db_session, quotation))[0]
+
+    assert top.name == "Studio Dock"
+
+
+async def test_a_configured_pairing_outranks_a_bigger_margin(db_session):
+    """Somebody typed this pairing. It beats an unrelated product's margin."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            ("Cable Kit", "Accessories", 10, 40),
+            ("Core Router", "Networking", 200, 900),
+        ],
+    )
+    db_session.add(
+        ProductPairing(
+            product_id=made["Studio Laptop"].id,
+            suggested_product_id=made["Cable Kit"].id,
+            weight=2.0,
+            source=PairingSource.MANUAL,
+        )
+    )
+    await db_session.commit()
+    quotation = await _quotation(db_session, tier, made["Studio Laptop"])
+
+    suggestions = await upsell_service.suggest(db_session, quotation)
+
+    assert suggestions[0].name == "Cable Kit"
+    assert suggestions[0].reason == "Recommended pairing"
+
+
+def test_affinity_does_not_want_every_category():
+    """The direct pin on the bug: the affinity set used to cover the catalogue.
+
+    A pure unit test - `_category_demand` reads only the lines, so it needs no
+    database at all.
+    """
+
+    class _Line:
+        def __init__(self, category, name="Thing"):
+            self.category = category
+            self.product_name = name
+
+    class _Quote:
+        lines = [_Line("Hardware"), _Line("Hardware"), _Line("Networking")]
+
+    demand = upsell_service._category_demand(_Quote())
+
+    assert len(demand.demand) <= upsell_service.MAX_AFFINITY_CATEGORIES
+    # Hardware is on the quote, so it is discounted below the cutoff rather than
+    # suggested back to itself.
+    assert "Hardware" not in demand.demand
+    assert "Accessories" in demand.demand
+    assert demand.driver["Accessories"] == "Hardware"
+
+
+# --------------------------------------------------------------------------- #
+# Co-purchase mining
+# --------------------------------------------------------------------------- #
+
+
+async def test_mining_learns_from_orders_and_spares_manual_pairings(db_session):
+    """Evidence is rebuilt from history; an admin's judgement is left alone."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            ("Studio Dock", "Accessories", 30, 120),
+            ("Cable Kit", "Accessories", 10, 40),
+        ],
+    )
+    typed = ProductPairing(
+        product_id=made["Studio Laptop"].id,
+        suggested_product_id=made["Cable Kit"].id,
+        weight=1.5,
+        source=PairingSource.MANUAL,
+    )
+    db_session.add(typed)
+    await db_session.commit()
+
+    # Two confirmed orders, each carrying the laptop and the dock.
+    for index in range(2):
+        quotation = await _quotation(
+            db_session,
+            tier,
+            made["Studio Laptop"],
+            email=f"buyer{index}@example.com",
+        )
+        await quotation_service.add_line(
+            db_session,
+            quotation,
+            QuotationLineCreate(
+                variant_id=made["Studio Dock"].variants[0].id,
+                quantity=1,
+                line_discount_percent=0,
+            ),
+        )
+        await _record_sale(db_session, quotation)
+
+    mined = await pairing_service.mine_co_purchases(db_session, minimum=2)
+
+    assert mined == 2, "both directions of the laptop/dock pair"
+    rows = await _pairings(db_session)
+    assert (made["Studio Laptop"].id, made["Studio Dock"].id) in rows
+    assert rows[(made["Studio Laptop"].id, made["Cable Kit"].id)] == PairingSource.MANUAL
+
+
+async def test_mining_retires_evidence_that_no_longer_holds(db_session):
+    """A pair that stops clearing the threshold stops being suggested."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Laptop", "Hardware", 400, 1000),
+            ("Studio Dock", "Accessories", 30, 120),
+        ],
+    )
+    db_session.add(
+        ProductPairing(
+            product_id=made["Studio Laptop"].id,
+            suggested_product_id=made["Studio Dock"].id,
+            weight=2.0,
+            source=PairingSource.CO_PURCHASE,
+        )
+    )
+    await db_session.commit()
+
+    # No sales history at all, so nothing justifies that row.
+    assert await pairing_service.mine_co_purchases(db_session) == 0
+    assert await _pairings(db_session) == {}

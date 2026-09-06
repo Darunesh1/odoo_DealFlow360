@@ -261,7 +261,12 @@ async def seed_demo_data() -> None:
                         product_id=source.id,
                         suggested_product_id=suggested.id,
                         weight=weight,
-                        source=PairingSource.CO_PURCHASE,
+                        # MANUAL, not CO_PURCHASE: nobody mined these, an
+                        # author typed them. It also keeps them safe from
+                        # `pairing_service.mine_co_purchases`, which rebuilds
+                        # the mined set from the sales history and would retire
+                        # a seeded row the moment it ran.
+                        source=PairingSource.MANUAL,
                     )
                 )
         await session.commit()

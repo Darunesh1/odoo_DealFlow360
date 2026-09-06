@@ -69,3 +69,8 @@ def bill_due_subscriptions() -> str:
 @celery_app.task(name="app.tasks.scheduled_tasks.sweep_deal_health")
 def sweep_deal_health() -> str:
     return _call("health_service", "sweep", "Deal health alerts raised")
+
+
+@celery_app.task(name="app.tasks.scheduled_tasks.mine_co_purchases")
+def mine_co_purchases() -> str:
+    return _call("pairing_service", "mine_co_purchases", "Co-purchase pairings mined")

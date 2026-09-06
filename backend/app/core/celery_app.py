@@ -44,6 +44,14 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.scheduled_tasks.sweep_deal_health",
         "schedule": crontab(minute=0),
     },
+    "mine-co-purchases": {
+        "task": "app.tasks.scheduled_tasks.mine_co_purchases",
+        # 03:00 UTC daily, after the billing run. Only order confirmation moves
+        # this data, and a suggestion that lags the truth by a day costs
+        # nothing - whereas rebuilding it per request would put a self-join on
+        # the critical path of a panel that refetches on every line change.
+        "schedule": crontab(hour=3, minute=0),
+    },
 }
 
 # Autodiscover tasks under app package
