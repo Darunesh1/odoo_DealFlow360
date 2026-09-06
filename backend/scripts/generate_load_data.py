@@ -8,8 +8,12 @@ cap on plans. Slower to run, but the data it produces is data the application
 would actually have made.
 
 Idempotent by name: re-running tops up rather than duplicating.
-"""
 
+The generator is idempotent **by name**, which matters when the naming scheme
+changes: a re-run then adds correctly-shaped products alongside the old ones
+rather than replacing them. After editing NOUN_CATEGORY or the adjectives, run
+`make fresh` first (and restart the API so it re-seeds) before `make load-data`.
+"""
 import argparse
 import asyncio
 import logging
@@ -22,9 +26,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logging.disable(logging.INFO)
 
-CATEGORIES = ["Hardware", "Services", "Accessories", "Networking", "Peripherals"]
 ADJECTIVES = ["Compact", "Pro", "Ultra", "Lite", "Rugged", "Studio", "Edge", "Prime"]
-NOUNS = ["Laptop", "Monitor", "Dock", "Router", "Headset", "Keyboard", "Switch", "Tablet"]
+
+# The category comes from the noun, never from a die roll. It used to be
+# random.choice(CATEGORIES) independent of the name, which put "Studio Laptop"
+# in Peripherals and "Pro Monitor" in Services - and every category-driven
+# suggestion then read as nonsense however correct the ranking was.
+NOUN_CATEGORY = {
+    "Laptop": "Hardware",
+    "Tablet": "Hardware",
+    "Workstation": "Hardware",
+    "Monitor": "Peripherals",
+    "Headset": "Peripherals",
+    "Keyboard": "Peripherals",
+    "Dock": "Accessories",
+    "Cable Kit": "Accessories",
+    "Stand": "Accessories",
+    "Router": "Networking",
+    "Switch": "Networking",
+    "Access Point": "Networking",
+}
+SERVICE_NOUNS = ["Onsite Setup", "Installation Service", "Support Retainer", "Migration Service"]
+PLAN_NOUNS = ["Care Plan", "Support Plan", "Cloud Plan", "Licence Plan"]
+
+# What a thing of this kind costs, so a keyboard is not $890 and the margin
+# component of the suggestion score reads sensibly.
+CATEGORY_COST = {
+    "Hardware": (400, 900),
+    "Networking": (80, 400),
+    "Peripherals": (40, 220),
+    "Accessories": (15, 90),
+    "Services": (60, 300),
+    "Subscription": (10, 60),
+}
+
+# Which categories are worth pairing, and with what. Seeded as MANUAL - an
+# author typed them - so `pairing_service.mine_co_purchases` leaves them alone.
+PAIRING_PATTERNS = [
+    ("Hardware", "Accessories"),
+    ("Hardware", "Peripherals"),
+    ("Hardware", "Services"),
+    ("Networking", "Services"),
+    ("Peripherals", "Accessories"),
+]
 # Real addresses the tester signs in with. Created directly rather than
 # invited, so nobody has to open an inbox to get in - and so we do not email
 # three live addresses every time this runs.
@@ -44,7 +88,13 @@ async def main(n_products: int, n_customers: int, n_quotations: int) -> None:
     from sqlalchemy import func, select
 
     from app.core.database import async_session_maker
-    from app.models.catalog import Product, ProductUnit, RecurringInterval
+    from app.models.catalog import (
+        PairingSource,
+        Product,
+        ProductPairing,
+        ProductUnit,
+        RecurringInterval,
+    )
     from app.models.customer import Customer, CustomerTier
     from app.models.inventory import Warehouse
     from app.models.user import Role
@@ -109,18 +159,39 @@ async def main(n_products: int, n_customers: int, n_quotations: int) -> None:
         existing = (await db.execute(select(func.count()).select_from(Product))).scalar_one()
         made = 0
         for index in range(n_products):
-            name = f"{random.choice(ADJECTIVES)} {random.choice(NOUNS)} {1000 + index}"
+            # One in eight is a plan, so the subscription paths get exercised;
+            # one in six of the rest is a service.
+            is_plan = index % 8 == 7
+            is_service = not is_plan and index % 6 == 3
+            if is_plan:
+                noun, category = random.choice(PLAN_NOUNS), "Subscription"
+            elif is_service:
+                noun, category = random.choice(SERVICE_NOUNS), "Services"
+            else:
+                noun = random.choice(list(NOUN_CATEGORY))
+                category = NOUN_CATEGORY[noun]
+
+            name = f"{random.choice(ADJECTIVES)} {noun} {1000 + index}"
             if (
                 await db.execute(select(Product).where(Product.name == name))
             ).scalars().first() is not None:
                 continue
 
-            # One in eight is a plan, so the subscription paths get exercised.
-            is_plan = index % 8 == 7
-            # A third carry variants, which is what makes the SKU count grow.
+            # A third of the physical products carry a real upgrade axis, which
+            # is what gives the upsell panel something to offer: "8GB -> 16GB",
+            # not "Black -> Silver". Colour is not an upgrade.
             attributes = (
-                [VariantAttributeInput(name="Colour", values=["Black", "Silver", "White"])]
-                if (index % 3 == 0 and not is_plan)
+                [
+                    VariantAttributeInput(
+                        name="Capacity" if category == "Hardware" else "Tier",
+                        values=(
+                            ["8GB", "16GB", "32GB"]
+                            if category == "Hardware"
+                            else ["Standard", "Plus", "Pro"]
+                        ),
+                    )
+                ]
+                if (index % 3 == 0 and not is_plan and not is_service)
                 else []
             )
 
@@ -128,23 +199,47 @@ async def main(n_products: int, n_customers: int, n_quotations: int) -> None:
                 db,
                 ProductCreate(
                     name=name,
-                    category="Subscription" if is_plan else random.choice(CATEGORIES),
+                    category=category,
                     unit=ProductUnit.RECURRING if is_plan else ProductUnit.EACH,
                     tax_percent=random.choice([0.0, 5.0, 12.0, 15.0]),
                     is_subscription=is_plan,
                     recurring_interval=RecurringInterval.MONTHLY if is_plan else None,
+                    # A twentieth of the catalogue, so the promotion component
+                    # of the suggestion score exists without swamping it.
+                    is_promoted=index % 20 == 5,
+                    promotion_label="Q4 push" if index % 20 == 5 else None,
                     has_variants=bool(attributes),
                     attributes=attributes,
                 ),
             )
 
-            cost = round(random.uniform(20, 900), 2)
+            low, high = CATEGORY_COST[category]
+            cost = round(random.uniform(low, high), 2)
+            # Price by the position of the value in the axis, not by the
+            # variant's name. Sorting alphabetically made "8GB" the dearest of
+            # 8/16/32 and "Standard" dearer than "Pro", so every upgrade the
+            # panel offered was actually a downgrade.
+            # One markup per product, not per variant: drawing it per row let a
+            # random 1.3 on the Pro tier undercut a 1.9 on the Plus, so the
+            # ladder the upsell panel offers was not always a ladder.
+            markup = random.uniform(1.3, 1.9)
+            axis = attributes[0].values if attributes else []
+            rank = {value: index for index, value in enumerate(axis)}
+
+            def _step(variant) -> int:
+                for value, index in rank.items():
+                    if value in variant.name:
+                        return index
+                return 0
+
             rows = [
                 VariantRowInput(
                     id=variant.id,
                     sku=variant.sku,
-                    unit_cost=cost,
-                    base_price=round(cost * random.uniform(1.3, 1.9), 2),
+                    # Later variants in the axis cost more, so the upgrade the
+                    # panel offers is genuinely a step up rather than a coin toss.
+                    unit_cost=round(cost * (1 + 0.25 * step), 2),
+                    base_price=round(cost * (1 + 0.25 * step) * markup, 2),
                     available_quantity=None if not is_plan else random.randint(20, 200),
                     stock=(
                         []
@@ -155,13 +250,51 @@ async def main(n_products: int, n_customers: int, n_quotations: int) -> None:
                         ]
                     ),
                 )
-                for variant in product.variants
+                for step, variant in ((_step(v), v) for v in product.variants)
             ]
             await variant_service.save_variant_matrix(db, product, rows)
             made += 1
             if made % 25 == 0:
                 print(f"  {made} products…", flush=True)
         print(f"products: {existing} before, {made} added")
+
+        # ---------------------------------------------------------------- #
+        # Pairings, so the strongest suggestion signal is exercised before a
+        # single order has been confirmed. MANUAL, because an author typed
+        # them - `pairing_service.mine_co_purchases` rebuilds the CO_PURCHASE
+        # set from the sales history and would retire anything it finds there.
+        # ---------------------------------------------------------------- #
+        by_category: dict[str, list] = {}
+        for product in (await db.execute(select(Product))).scalars().all():
+            by_category.setdefault(product.category, []).append(product)
+
+        known = {
+            (row.product_id, row.suggested_product_id)
+            for row in (await db.execute(select(ProductPairing))).scalars().all()
+        }
+        paired = 0
+        for source_category, target_category in PAIRING_PATTERNS:
+            sources = by_category.get(source_category, [])
+            targets = by_category.get(target_category, [])
+            if not sources or not targets:
+                continue
+            for source in random.sample(sources, min(len(sources), 8)):
+                for target in random.sample(targets, min(len(targets), 2)):
+                    key = (source.id, target.id)
+                    if source.id == target.id or key in known:
+                        continue
+                    known.add(key)
+                    db.add(
+                        ProductPairing(
+                            product_id=source.id,
+                            suggested_product_id=target.id,
+                            weight=round(random.uniform(1.2, 1.8), 2),
+                            source=PairingSource.MANUAL,
+                        )
+                    )
+                    paired += 1
+        await db.commit()
+        print(f"pairings: {paired} added")
 
         # ---------------------------------------------------------------- #
         # Customers, each with a portal login

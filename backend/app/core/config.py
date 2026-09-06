@@ -120,7 +120,11 @@ class Settings(BaseSettings):
     # rationale. It is never a hard dependency of the suggestions route: a slow
     # or failing ranking falls back to that same ordering.
     GEMINI_API_KEY: Optional[str] = None
-    GEMINI_MODEL: str = "gemini-2.5-flash"
+    # flash-lite, not flash: the free tier allows 20 gemini-2.5-flash calls a
+    # DAY, which a single afternoon of quoting exhausts - and the panel then
+    # silently drops to its deterministic order. flash-lite is far more
+    # generous, faster, and ample for ranking fifteen priced rows.
+    GEMINI_MODEL: str = "gemini-2.5-flash-lite"
     # Budget for the whole call. The panel sits on the critical path of a screen
     # a rep refetches on every line change, so a slow ranking is worse than no
     # ranking. Measured at ~2.5s for fifteen candidates with thinking off, so
