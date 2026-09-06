@@ -66,6 +66,10 @@ class QuotationLineCreate(BaseModel):
 
 
 class QuotationLineUpdate(BaseModel):
+    # Accepting an upsell: move this line to a dearer variant of the same
+    # product. The service refuses a variant belonging to another product, so
+    # this cannot be used to swap the line for something else entirely.
+    variant_id: Optional[uuid.UUID] = None
     quantity: Optional[int] = Field(default=None, ge=1)
     line_discount_percent: Optional[float] = Field(default=None, ge=0, le=100)
     source: Optional[LineSource] = None
@@ -185,6 +189,11 @@ class UpsellSuggestion(BaseModel):
     # What the scoring engine gave it, out of 100. Shown on the card so a
     # rep can see the panel is ranking rather than guessing.
     score: float = 0.0
+    # "cross_sell" or "upsell" - the panel groups on this.
+    kind: str = "cross_sell"
+    # Upsell only: which line this replaces, and what the upgrade costs.
+    replaces_line_id: Optional[uuid.UUID] = None
+    price_delta: Optional[float] = None
 
 
 class QuotationCreate(BaseModel):

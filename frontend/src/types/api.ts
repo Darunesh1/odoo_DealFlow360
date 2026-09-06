@@ -1068,6 +1068,11 @@ export interface UpsellSuggestion {
   rationale: string | null
   /** What the scoring engine gave it, out of 100. */
   score: number
+  /** "upsell" replaces a line; "cross_sell" adds one. */
+  kind: "upsell" | "cross_sell"
+  /** Upsell only: the line this replaces, and what the upgrade costs. */
+  replaces_line_id: string | null
+  price_delta: number | null
 }
 
 export interface QuotationSubmitResponse {
@@ -1236,6 +1241,8 @@ export interface QuotationLineCreateInput {
 }
 
 export interface QuotationLineUpdateInput {
+  /** Accepting an upsell: move this line to a dearer variant of the same product. */
+  variant_id?: string
   quantity?: number
   line_discount_percent?: number
   source?: LineSource

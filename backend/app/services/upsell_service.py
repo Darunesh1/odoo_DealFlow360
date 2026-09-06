@@ -72,6 +72,9 @@ POOL_LIMIT = 60
 # The cache holds more than it shows, so dismissing a card does not have to
 # invalidate anything: dismissals are filtered after the read.
 CACHE_OVERFETCH = 8
+# How many upgrades to offer. More than a couple and the panel stops being a
+# suggestion and starts being a variant picker.
+UPSELL_LIMIT = 2
 
 # Which categories sell into which. Free text typed by an admin, so keyed
 # lower-cased, and a category missing from this map simply falls through to the
@@ -160,6 +163,13 @@ class Suggestion(BaseModel):
     rationale: Optional[str] = None
     # The additive score that put it here, out of 100.
     score: float = 0.0
+    # "cross_sell" (something else worth adding) or "upsell" (a better version
+    # of something already on the quote). The two answer different questions and
+    # the panel groups them separately.
+    kind: str = "cross_sell"
+    # Upsell only: the line this would replace, and what the swap costs.
+    replaces_line_id: Optional[uuid.UUID] = None
+    price_delta: Optional[float] = None
 
 
 def _min_margin_percent() -> float:
@@ -558,6 +568,108 @@ def _rank_deterministic(
     return _diversify([suggestion for _, suggestion in scored])
 
 
+async def _upsell_candidates(
+    db: AsyncSession, quotation: Quotation
+) -> list[Suggestion]:
+    """Better versions of what is already on the quote.
+
+    Cross-sell asks "what else?"; upsell asks "which one?". They are different
+    questions with different evidence, so this does not compete on the
+    cross-sell score - a dearer variant of a line the rep has already chosen
+    needs no relevance argument, it is relevant by construction.
+
+    Ordered by the smallest uplift first: the next step up converts, a triple
+    price jump does not.
+    """
+    quoted = {
+        line.variant_id: line for line in quotation.lines if line.variant_id
+    }
+    product_ids = {line.product_id for line in quotation.lines if line.product_id}
+    if not quoted or not product_ids:
+        return []
+
+    unit_price = VariantPrice.unit_price
+    unit_cost = ProductVariant.unit_cost
+    margin = unit_price - unit_cost
+
+    rows = (
+        await db.execute(
+            select(
+                Product.id.label("product_id"),
+                Product.name.label("name"),
+                Product.category.label("category"),
+                Product.is_promoted.label("is_promoted"),
+                Product.promotion_label.label("promotion_label"),
+                Product.is_subscription.label("is_subscription"),
+                ProductVariant.id.label("variant_id"),
+                ProductVariant.name.label("variant_name"),
+                ProductVariant.sku.label("sku"),
+                unit_cost.label("unit_cost"),
+                unit_price.label("unit_price"),
+            )
+            .join(ProductVariant, ProductVariant.product_id == Product.id)
+            .join(VariantPrice, VariantPrice.variant_id == ProductVariant.id)
+            .where(
+                Product.id.in_(product_ids),
+                Product.status == ProductStatus.ACTIVE,
+                ProductVariant.is_active.is_(True),
+                ProductVariant.id.notin_(set(quoted)),
+                VariantPrice.tier_id == quotation.customer_tier_id,
+                VariantPrice.currency_code == quotation.currency,
+                unit_price > 0,
+                # The same margin floor cross-sells clear. An upgrade that costs
+                # the company money is not an upgrade worth offering.
+                margin / unit_price * 100 >= _min_margin_percent(),
+            )
+        )
+    ).mappings().all()
+
+    by_product: dict[uuid.UUID, list] = {}
+    for line in quotation.lines:
+        if line.product_id:
+            by_product.setdefault(line.product_id, []).append(line)
+
+    suggestions: list[tuple[float, Suggestion]] = []
+    for row in rows:
+        for line in by_product.get(row["product_id"], []):
+            delta = float(row["unit_price"]) - float(line.unit_price)
+            if delta <= 0:
+                # Only ever a step up. A cheaper variant is a discount the rep
+                # can already give, not a suggestion worth making.
+                continue
+            price = Decimal(str(row["unit_price"]))
+            cost = Decimal(str(row["unit_cost"]))
+            variant_margin = price - cost
+            suggestions.append(
+                (
+                    delta,
+                    Suggestion(
+                        product_id=row["product_id"],
+                        variant_id=row["variant_id"],
+                        name=f"{row['name']} - {row['variant_name']}",
+                        category=row["category"],
+                        sku=row["sku"],
+                        unit_price=float(price),
+                        unit_cost=float(cost),
+                        margin_delta=float(variant_margin) - float(line.unit_cost or 0),
+                        margin_percent=round(
+                            float(variant_margin / price * 100) if price else 0.0, 2
+                        ),
+                        is_promoted=row["is_promoted"],
+                        promotion_label=row["promotion_label"],
+                        is_recurring=row["is_subscription"],
+                        reason=f"A step up from {line.variant_name or 'the version'} on this quote",
+                        kind="upsell",
+                        replaces_line_id=line.id,
+                        price_delta=round(delta, 2),
+                    ),
+                )
+            )
+
+    suggestions.sort(key=lambda item: (item[0], item[1].name))
+    return [suggestion for _, suggestion in suggestions[:UPSELL_LIMIT]]
+
+
 def _fingerprint(quotation: Quotation) -> str:
     """What the suggestions depend on, hashed.
 
@@ -598,8 +710,16 @@ async def _build(
     ranked = _rank_deterministic(
         pool, pairings, affinity, customer, _line_tokens(quotation)
     )[:AI_CANDIDATE_LIMIT]
+
+    # Upgrades are sourced and ordered separately, and are not sent to the
+    # ranker: a dearer version of a line the rep already chose is relevant by
+    # construction, and asking a model to re-argue that only risks it dropping
+    # one. They are prepended, so the panel leads with "you could sell more of
+    # what they already want".
+    upsells = await _upsell_candidates(db, quotation)
+
     if not ranked:
-        return []
+        return upsells
 
     # Everything below only permutes and annotates `ranked`.
     try:
@@ -615,7 +735,7 @@ async def _build(
         picks = None
 
     if not picks:
-        return ranked[:CACHE_OVERFETCH]
+        return upsells + ranked[:CACHE_OVERFETCH]
 
     by_id = {str(s.product_id): s for s in ranked}
     chosen: list[Suggestion] = []
@@ -634,7 +754,7 @@ async def _build(
             break
         if str(suggestion.product_id) not in seen:
             chosen.append(suggestion)
-    return chosen
+    return upsells + chosen
 
 
 def _quote_context(quotation: Quotation) -> dict:
@@ -688,7 +808,13 @@ async def suggest(
     # Filtered after the read, not baked into the key: otherwise dismiss() would
     # have to know the fingerprint to invalidate. The loader over-fetches so the
     # panel stays full.
-    return [s for s in cached if s.product_id not in exclude][:limit]
+    #
+    # Upgrades are kept whole and the cross-sell list is trimmed around them, so
+    # offering two upsells never costs the rep every cross-sell.
+    visible = [s for s in cached if s.product_id not in exclude]
+    upsells = [s for s in visible if s.kind == "upsell"]
+    cross = [s for s in visible if s.kind != "upsell"]
+    return upsells[:UPSELL_LIMIT] + cross[: max(limit - len(upsells[:UPSELL_LIMIT]), 1)]
 
 
 def _is_uuid(value: str) -> bool:

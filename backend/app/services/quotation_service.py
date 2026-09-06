@@ -575,6 +575,14 @@ async def update_line(db: AsyncSession, quotation: Quotation, line_id: uuid.UUID
         raise ValueError("Quotation line variant is missing")
     quantity = obj_in.quantity if obj_in.quantity is not None else line.quantity
 
+    # An accepted upsell swaps the line to a dearer variant of the same product
+    # rather than adding a second line. Doing it here means one path re-prices,
+    # re-checks capacity and stock, and recalculates - the alternative was a
+    # delete-then-add that leaves the quote briefly wrong and loses the
+    # discount the rep had already agreed.
+    if obj_in.variant_id is not None and obj_in.variant_id != line.variant_id:
+        await _swap_variant(db, quotation, line, obj_in.variant_id, quantity)
+
     if quantity != line.quantity and line.is_recurring and line.product_id:
         product = await get_product_by_id(db, line.product_id)
         variant = await get_variant_by_id(db, line.variant_id)
@@ -598,11 +606,78 @@ async def update_line(db: AsyncSession, quotation: Quotation, line_id: uuid.UUID
             stock_available_at_entry=stock_available_at_entry,
         )
     for field, value in obj_in.model_dump(exclude_unset=True).items():
+        # Already applied, along with everything a new variant changes.
+        if field == "variant_id":
+            continue
         setattr(line, field, value)
     db.add(line)
     await db.commit()
     quotation = await ensure_quotation_loaded(db, quotation.id)
     return await recalculate_quotation(db, quotation)
+
+
+async def _swap_variant(
+    db: AsyncSession,
+    quotation: Quotation,
+    line: QuotationLine,
+    variant_id: uuid.UUID,
+    quantity: int,
+) -> None:
+    """Move a line onto a different variant of the same product.
+
+    Everything the line snapshotted from the old variant has to move with it -
+    sku, name, cost, options and the price for this tier - or the quote would
+    show one SKU at another's price. The product itself may not change: that is
+    a different line, not an upgrade.
+    """
+    variant = await get_variant_by_id(db, variant_id)
+    if not variant or not variant.is_active:
+        raise ValueError("Variant not found")
+    if variant.product_id != line.product_id:
+        raise ValueError("That variant belongs to a different product")
+
+    product = await get_product_by_id(db, variant.product_id)
+    if not product or product.status != ProductStatus.ACTIVE:
+        raise ValueError("Product not found")
+
+    await _check_plan_capacity(db, product=product, variant=variant, quantity=quantity)
+
+    unit_price = await resolve_variant_price(
+        db,
+        variant_id=variant.id,
+        tier_id=quotation.customer.tier_id,
+        currency_code=quotation.currency,
+    )
+    if unit_price is None:
+        raise ValueError(
+            f"{variant.sku} has no {quotation.currency} price for the "
+            f"{quotation.customer.tier.name} tier"
+        )
+
+    line.variant_id = variant.id
+    line.variant_name = None if variant.is_default else variant.name
+    line.sku = variant.sku
+    line.unit_price = _unit(unit_price)
+    line.list_price_at_entry = _unit(unit_price)
+    line.unit_cost = _money(variant.unit_cost)
+    line.selected_options = variant.options
+
+    # A different SKU may sit in a different warehouse, or nowhere at all.
+    (
+        warehouse_id,
+        warehouse_name,
+        warehouse_code,
+        warehouse_bin_location,
+        stock_available_at_entry,
+    ) = await _allocate_stock_line(db, variant_id=variant.id, quantity=quantity)
+    _apply_stock_snapshot(
+        line,
+        warehouse_id=warehouse_id,
+        warehouse_name=warehouse_name,
+        warehouse_code=warehouse_code,
+        warehouse_bin_location=warehouse_bin_location,
+        stock_available_at_entry=stock_available_at_entry,
+    )
 
 
 async def remove_line(db: AsyncSession, quotation: Quotation, line_id: uuid.UUID) -> Quotation:

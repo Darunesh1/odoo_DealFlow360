@@ -16,7 +16,11 @@ from app.models.customer import CustomerTier
 from app.models.user import Role
 from app.schemas.catalog import ProductCreate, VariantRowInput
 from app.schemas.customer import CustomerCreate, CustomerTierCreate
-from app.schemas.quotation import QuotationCreate, QuotationLineCreate
+from app.schemas.quotation import (
+    QuotationCreate,
+    QuotationLineCreate,
+    QuotationLineUpdate,
+)
 from app.models.catalog import PairingSource, ProductPairing
 from app.services import (
     catalog_service,
@@ -70,7 +74,7 @@ async def _catalogue(db, *, products: list[tuple[str, str, float, float]]):
     return tier, made
 
 
-async def _quotation(db, tier, seed_product, *, email="buy@example.com"):
+async def _quotation(db, tier, seed_product, *, email="buy@example.com", variant=None):
     """A draft with one line on it, owned by a rep.
 
     A distinct email means a distinct customer, which means a distinct quotation
@@ -94,7 +98,9 @@ async def _quotation(db, tier, seed_product, *, email="buy@example.com"):
         db,
         quotation,
         QuotationLineCreate(
-            variant_id=seed_product.variants[0].id, quantity=2, line_discount_percent=0
+            variant_id=(variant or seed_product.variants[0]).id,
+            quantity=2,
+            line_discount_percent=0,
         ),
     )
 
@@ -494,3 +500,99 @@ async def test_mining_retires_evidence_that_no_longer_holds(db_session):
     # No sales history at all, so nothing justifies that row.
     assert await pairing_service.mine_co_purchases(db_session) == 0
     assert await _pairings(db_session) == {}
+
+
+# --------------------------------------------------------------------------- #
+# Upsell: a better version of what is already on the quote
+# --------------------------------------------------------------------------- #
+
+
+async def _tiered_product(db, tier, name, *, cheap, dear):
+    """One product with two priced variants, so there is something to upgrade to."""
+    from app.schemas.catalog import VariantAttributeInput
+
+    product = await catalog_service.create_product(
+        db,
+        ProductCreate(
+            name=name,
+            category="Hardware",
+            has_variants=True,
+            attributes=[VariantAttributeInput(name="RAM", values=["8GB", "16GB"])],
+        ),
+    )
+    await variant_service.generate_variants(db, product)
+    product = await catalog_service.get_product_by_id(db, product.id)
+    rows = []
+    for variant in sorted(product.variants, key=lambda v: v.name):
+        price = cheap if "8GB" in variant.name else dear
+        rows.append(
+            VariantRowInput(
+                id=variant.id,
+                sku=f"SKU-{name}-{variant.name}".replace(" ", "-"),
+                unit_cost=price * 0.4,
+                base_price=price,
+            )
+        )
+    await variant_service.save_variant_matrix(db, product, rows)
+    return await catalog_service.get_product_by_id(db, product.id)
+
+
+async def test_an_upsell_offers_only_dearer_variants(db_session):
+    """A cheaper variant is a discount, not a suggestion."""
+    tier, _ = await _catalogue(db_session, products=[("Filler", "Accessories", 10, 40)])
+    laptop = await _tiered_product(db_session, tier, "Laptop", cheap=900, dear=1400)
+    cheapest = min(laptop.variants, key=lambda v: v.base_price)
+    quotation = await _quotation(db_session, tier, laptop, variant=cheapest)
+
+    upsells = [
+        s for s in await upsell_service.suggest(db_session, quotation)
+        if s.kind == "upsell"
+    ]
+
+    assert upsells, "the dearer variant should be offered"
+    assert all(s.price_delta > 0 for s in upsells)
+    assert all(s.replaces_line_id == quotation.lines[0].id for s in upsells)
+    assert all("16GB" in s.name for s in upsells)
+
+
+async def test_accepting_an_upsell_swaps_the_line_in_place(db_session):
+    """One line still, re-priced, with the dearer SKU on it."""
+    tier, _ = await _catalogue(db_session, products=[("Filler", "Accessories", 10, 40)])
+    laptop = await _tiered_product(db_session, tier, "Laptop", cheap=900, dear=1400)
+    cheapest = min(laptop.variants, key=lambda v: v.base_price)
+    dearest = max(laptop.variants, key=lambda v: v.base_price)
+    quotation = await _quotation(db_session, tier, laptop, variant=cheapest)
+    before = float(quotation.lines[0].unit_price)
+
+    quotation = await quotation_service.update_line(
+        db_session,
+        quotation,
+        quotation.lines[0].id,
+        QuotationLineUpdate(variant_id=dearest.id),
+    )
+
+    assert len(quotation.lines) == 1, "an upgrade replaces, it does not add"
+    line = quotation.lines[0]
+    assert line.variant_id == dearest.id
+    assert line.sku.endswith("16GB")
+    assert float(line.unit_price) > before
+
+
+async def test_a_line_cannot_be_swapped_to_another_product(db_session):
+    """The swap is an upgrade path, not a way to replace the whole line."""
+    tier, made = await _catalogue(
+        db_session,
+        products=[
+            ("Studio Dock", "Accessories", 30, 120),
+            ("Cable Kit", "Accessories", 10, 40),
+        ],
+    )
+    quotation = await _quotation(db_session, tier, made["Studio Dock"])
+
+    with pytest.raises(ValueError, match="different product"):
+        await quotation_service.update_line(
+            db_session,
+            quotation,
+            quotation.lines[0].id,
+            QuotationLineUpdate(variant_id=made["Cable Kit"].variants[0].id),
+        )

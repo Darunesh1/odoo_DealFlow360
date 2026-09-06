@@ -186,7 +186,7 @@ export default function QuotationDetailPage() {
               <CardContent>
                 <ProductPicker
                   products={products.data ?? []}
-                  disabled={mutations.addLine.isPending}
+                  disabled={mutations.addLine.isPending || mutations.updateLine.isPending}
                   onAdd={({ variantId, quantity, discount }) =>
                     mutations.addLine.mutate({
                       variant_id: variantId,
@@ -305,6 +305,17 @@ export default function QuotationDetailPage() {
               onDismiss={(suggestion) =>
                 mutations.dismissSuggestion.mutate(suggestion.product_id)
               }
+              onUpgrade={(suggestion) => {
+                // Swap the line rather than adding one: the same PATCH the
+                // quantity field uses, so re-pricing, the capacity check and
+                // the risk recalculation all happen on the path that already
+                // exists.
+                if (!suggestion.replaces_line_id) return
+                mutations.updateLine.mutate({
+                  lineId: suggestion.replaces_line_id,
+                  body: { variant_id: suggestion.variant_id, source: "upsell" },
+                })
+              }}
             />
           ) : null}
 

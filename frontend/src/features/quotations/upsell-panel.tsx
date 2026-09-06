@@ -1,4 +1,10 @@
-import { PlusIcon, SparklesIcon, TrendingUpIcon, XIcon } from "lucide-react"
+import {
+  ArrowUpCircleIcon,
+  PlusIcon,
+  SparklesIcon,
+  TrendingUpIcon,
+  XIcon,
+} from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,6 +26,7 @@ export function UpsellPanel({
   disabled,
   onAdd,
   onDismiss,
+  onUpgrade,
 }: {
   suggestions: UpsellSuggestion[]
   currency: string
@@ -27,7 +34,13 @@ export function UpsellPanel({
   disabled: boolean
   onAdd: (suggestion: UpsellSuggestion) => void
   onDismiss: (suggestion: UpsellSuggestion) => void
+  onUpgrade: (suggestion: UpsellSuggestion) => void
 }) {
+  // Two different questions: "which one?" and "what else?". Grouped rather than
+  // interleaved, because an upgrade replaces a line the rep already chose while
+  // a cross-sell adds one, and a card that does not say which is a trap.
+  const upsells = suggestions.filter((item) => item.kind === "upsell")
+  const crossSells = suggestions.filter((item) => item.kind !== "upsell")
   return (
     <Card>
       <CardHeader>
@@ -36,8 +49,8 @@ export function UpsellPanel({
           Upsell &amp; cross-sell
         </CardTitle>
         <CardDescription>
-          Ranked by what sells alongside this cart, what is promoted, and the
-          margin each would add.
+          Upgrades to what is on the quote, then what sells alongside it -
+          ranked on co-purchase history, pairings, promotions and margin.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-2">
@@ -48,13 +61,21 @@ export function UpsellPanel({
             Nothing to suggest yet. Add a product and the panel fills in.
           </p>
         ) : (
-          suggestions.map((suggestion) => (
+          [...upsells, ...crossSells].map((suggestion) => (
             <div
-              key={suggestion.product_id}
+              key={`${suggestion.kind}:${suggestion.variant_id}`}
               className="group rounded-lg border p-3 transition-colors hover:border-foreground/25"
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
+                  {suggestion.kind === "upsell" ? (
+                    <p className="mb-0.5 flex items-center gap-1 text-[11px] font-medium uppercase tracking-wide text-brass">
+                      <ArrowUpCircleIcon className="size-3" /> Upgrade
+                      {suggestion.price_delta != null
+                        ? ` · +${money(suggestion.price_delta, currency)}`
+                        : ""}
+                    </p>
+                  ) : null}
                   <p className="truncate text-sm font-medium">{suggestion.name}</p>
                   <p className="text-xs text-muted-foreground">{suggestion.reason}</p>
                   {suggestion.rationale ? (
@@ -97,15 +118,27 @@ export function UpsellPanel({
                 <span className="font-mono text-sm tabular-nums">
                   {money(suggestion.unit_price, currency)}
                 </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7"
-                  disabled={disabled}
-                  onClick={() => onAdd(suggestion)}
-                >
-                  <PlusIcon /> Add to quote
-                </Button>
+                {suggestion.kind === "upsell" ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7"
+                    disabled={disabled}
+                    onClick={() => onUpgrade(suggestion)}
+                  >
+                    <ArrowUpCircleIcon /> Upgrade the line
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7"
+                    disabled={disabled}
+                    onClick={() => onAdd(suggestion)}
+                  >
+                    <PlusIcon /> Add to quote
+                  </Button>
+                )}
               </div>
             </div>
           ))
