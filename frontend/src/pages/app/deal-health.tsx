@@ -1,6 +1,13 @@
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { BellIcon, CheckIcon, RefreshCwIcon, TrendingUpIcon } from "lucide-react"
+import {
+  BellIcon,
+  CheckIcon,
+  RefreshCwIcon,
+  SearchIcon,
+  TrendingUpIcon,
+  TriangleAlertIcon,
+} from "lucide-react"
 
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
@@ -35,7 +42,7 @@ export default function DealHealthPage() {
   const canAct = hasRole("admin", "sales_manager", "finance")
 
   const { data: counts } = useAlertCounts()
-  const { data: alerts, isLoading } = useAlerts()
+  const { data: alerts, isLoading, isError } = useAlerts()
   const { sweep, act } = useAlertActions()
   const [busy, setBusy] = useState<string | null>(null)
 
@@ -52,16 +59,24 @@ export default function DealHealthPage() {
       <PageHeader
         eyebrow="Governance"
         title="Deal health"
-        description="Stalled deals, unusual discounts and delivery promises the fulfillment no longer supports."
+        description={
+          counts?.last_swept_at
+            ? `Last checked ${relativeTime(counts.last_swept_at)}. Stalled deals, unusual discounts and delivery promises the fulfillment no longer supports.`
+            : "Stalled deals, unusual discounts and delivery promises the fulfillment no longer supports."
+        }
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => sweep.mutate()}
-            disabled={sweep.isPending}
-          >
-            <RefreshCwIcon /> Run detection now
-          </Button>
+          // Only the roles POST /alerts/sweep admits. A rep used to see this
+          // button and get a 403 toast from it.
+          canAct ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => sweep.mutate()}
+              disabled={sweep.isPending}
+            >
+              <RefreshCwIcon /> Run detection now
+            </Button>
+          ) : null
         }
       />
 
@@ -94,14 +109,51 @@ export default function DealHealthPage() {
         <CardContent className="px-0">
           {isLoading ? (
             <p className="px-6 py-8 text-sm text-muted-foreground">Loading…</p>
-          ) : (alerts ?? []).length === 0 ? (
+          ) : isError ? (
+            // A failed request used to render as the reassuring green block,
+            // which is the one thing it must never say.
             <div className="px-6 py-12 text-center">
-              <TrendingUpIcon className="mx-auto size-6 text-emerald-600 dark:text-emerald-400" />
-              <p className="mt-2 text-sm font-medium">Nothing is at risk</p>
+              <TriangleAlertIcon className="mx-auto size-6 text-amber-600 dark:text-amber-400" />
+              <p className="mt-2 text-sm font-medium">Could not load alerts</p>
               <p className="text-sm text-muted-foreground">
-                Every live deal is moving and every promise is still achievable.
+                The deal health check is unavailable, so this is not a clean
+                bill of health. Try again in a moment.
               </p>
             </div>
+          ) : (alerts ?? []).length === 0 ? (
+            counts?.last_swept_at ? (
+              <div className="px-6 py-12 text-center">
+                <TrendingUpIcon className="mx-auto size-6 text-emerald-600 dark:text-emerald-400" />
+                <p className="mt-2 text-sm font-medium">Nothing is at risk</p>
+                <p className="text-sm text-muted-foreground">
+                  Every live deal is moving and every promise is still achievable.
+                </p>
+              </div>
+            ) : (
+              // Never swept is not the same as nothing wrong.
+              <div className="px-6 py-12 text-center">
+                <SearchIcon className="mx-auto size-6 text-muted-foreground" />
+                <p className="mt-2 text-sm font-medium">
+                  Detection has not run yet
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  No deal has been checked, so this is not a clean bill of
+                  health.
+                  {canAct ? " Run detection to see where things stand." : ""}
+                </p>
+                {canAct ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-4"
+                    onClick={() => sweep.mutate()}
+                    disabled={sweep.isPending}
+                  >
+                    <RefreshCwIcon /> Run detection now
+                  </Button>
+                ) : null}
+              </div>
+            )
           ) : (
             <div className="overflow-x-auto">
               <Table>

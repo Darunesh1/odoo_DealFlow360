@@ -183,3 +183,24 @@ async def set_members(namespace: str, suffix: str) -> set[str]:
     except Exception as exc:
         logger.warning(f"Cache set_members failed for {namespace}:{suffix}: {exc}")
         return set()
+
+
+# Plain values, outside the versioned key space: a marker like "when did the
+# deal-health sweep last run" has no invalidation event, only a fresher write.
+# Bumping a namespace version must not lose it, which is why these do not go
+# through cache_key().
+async def set_value(namespace: str, suffix: str, value: str, ttl: int) -> None:
+    try:
+        redis = get_redis_client()
+        await redis.set(f"{CACHE_PREFIX}:{namespace}:value:{suffix}", value, ex=ttl)
+    except Exception as exc:
+        logger.warning(f"Cache set_value failed for {namespace}:{suffix}: {exc}")
+
+
+async def get_value(namespace: str, suffix: str) -> Optional[str]:
+    try:
+        redis = get_redis_client()
+        return await redis.get(f"{CACHE_PREFIX}:{namespace}:value:{suffix}")
+    except Exception as exc:
+        logger.warning(f"Cache get_value failed for {namespace}:{suffix}: {exc}")
+        return None

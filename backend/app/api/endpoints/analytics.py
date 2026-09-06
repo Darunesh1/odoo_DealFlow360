@@ -115,6 +115,7 @@ async def read_alert_counts(
         stalled_deals=counts.get(AlertType.STALLED_DEAL.value, 0),
         discount_anomalies=counts.get(AlertType.DISCOUNT_ANOMALY.value, 0),
         delivery_slippage=counts.get(AlertType.DELIVERY_SLIPPAGE.value, 0),
+        last_swept_at=await health_service.last_swept_at(),
     )
 
 

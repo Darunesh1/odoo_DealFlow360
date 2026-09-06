@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 from fastapi import FastAPI, Request, status
@@ -17,6 +18,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def _startup_sweep() -> None:
+    """Raise the deal-health alerts the current state justifies, once, at boot.
+
+    Alerts only exist once a sweep writes them, and the only scheduled caller is
+    Celery Beat - which is a separate `make beat` process that is easy not to be
+    running. Without this the screen is empty on a perfectly healthy install and
+    there is no way to tell that apart from "nothing is wrong".
+
+    Detached and swallowing everything on purpose: a slow or failing sweep must
+    never delay or abort startup, the same reasoning as
+    `approval_service.plan_if_approved`. It opens its own session because the
+    request-scoped one does not exist yet.
+    """
+    from app.core.database import async_session_maker
+    from app.services import health_service
+
+    try:
+        async with async_session_maker() as db:
+            raised = await health_service.sweep(db)
+        logger.info(f"Startup deal-health sweep raised {raised} alert(s).")
+    except Exception as exc:
+        logger.warning(f"Startup deal-health sweep failed, continuing: {exc}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager that runs code on server startup and shutdown."""
@@ -28,7 +53,9 @@ async def lifespan(app: FastAPI):
         logger.error(f"Startup database initialization failed: {e}")
         # Terminate startup if database is unavailable
         raise e
+    sweep_task = asyncio.create_task(_startup_sweep())
     yield
+    sweep_task.cancel()
     logger.info("Shutting down FastAPI application...")
     from app.core.database import engine
     from app.core.redis import close_redis

@@ -70,6 +70,9 @@ class AlertCounts(BaseModel):
     stalled_deals: int = 0
     discount_anomalies: int = 0
     delivery_slippage: int = 0
+    # None means the sweep has never run here, which is not the same as "no
+    # alerts" - the screen says so rather than claiming everything is fine.
+    last_swept_at: Optional[str] = None
 
 
 class AlertAction(str, enum.Enum):

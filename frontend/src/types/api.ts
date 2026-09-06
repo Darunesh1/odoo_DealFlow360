@@ -469,6 +469,8 @@ export interface AlertCounts {
   stalled_deals: number
   discount_anomalies: number
   delivery_slippage: number
+  /** null means the sweep has never run — not the same as "no alerts". */
+  last_swept_at: string | null
 }
 
 export interface ActivityEntry {

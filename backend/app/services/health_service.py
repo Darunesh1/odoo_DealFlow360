@@ -54,6 +54,11 @@ ANOMALY_MULTIPLE = 2.0
 ANOMALY_FLOOR_POINTS = 5.0
 # How far back a rep's own average looks.
 REP_AVERAGE_DAYS = 180
+# Where the last sweep's timestamp lives, and how long it survives. A week,
+# because a marker that expires sooner would make a quiet system look
+# unswept.
+LAST_SWEEP_KEY = "deal-health:last-swept"
+LAST_SWEEP_TTL = 7 * 24 * 3600
 # States where a deal can still stall. A confirmed order is not stalled, it is
 # done being negotiated.
 LIVE_STATES = {
@@ -286,9 +291,23 @@ async def sweep(db: AsyncSession) -> int:
         ):
             raised += 1
 
-    if raised:
-        await db.commit()
+    # Always commit, even when nothing new was raised: `_suppressed` resolves a
+    # superseded alert on its way to returning False, and committing only when
+    # `raised` silently rolled that write back.
+    await cache.set_value(
+        cache.NS_REPORT, LAST_SWEEP_KEY, now.isoformat(), LAST_SWEEP_TTL
+    )
+    await db.commit()
     return raised
+
+
+async def last_swept_at() -> Optional[str]:
+    """When the sweep last ran, or None if it never has here.
+
+    What separates "nothing is at risk" from "nobody has looked yet" - two
+    states the screen used to render identically.
+    """
+    return await cache.get_value(cache.NS_REPORT, LAST_SWEEP_KEY)
 
 
 async def list_alerts(
