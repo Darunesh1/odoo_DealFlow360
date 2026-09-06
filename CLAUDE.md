@@ -475,6 +475,60 @@ colleagues' discount anomalies.
 
 ## Dashboards have to agree with the screens they link to
 
+## Suggestions, and the AI step that is never a dependency
+
+`upsell_service` sources candidates in four tiers, strongest evidence first:
+`product_pairings`, then `products.is_promoted`, then **category affinity** (a module constant,
+`CATEGORY_AFFINITY`), then plain margin. The last two exist because the first two are configuration
+somebody has to enter and usually hasn't — 306 products carrying 6 pairings and 1 promotion left the
+panel empty on nearly every quote. Pricing happens **in the pool query**, not per candidate; it used
+to be one `resolve_variant_price` round trip each, which does not survive a pool of sixty.
+
+With `GEMINI_API_KEY` set, `ai_ranking_service.rerank` re-orders those candidates and writes a
+one-line `rationale` per card. Three properties make that safe on the critical path, and all three
+are worth preserving:
+
+- **It only permutes.** `_build` hands it a list that is already complete and ranked; whatever comes
+  back is matched against that list and anything left short is backfilled from it. Remove the key
+  and the panel is identical minus the rationale lines.
+- **It cannot invent a product.** Candidates go out labelled `c1..cN`, so an id the model makes up
+  is simply absent from the map and is dropped. That — not the instruction in the prompt — is what
+  stops an admin-typed product name steering the panel.
+- **It cannot fail loudly.** Every path returns `None`: no key, timeout, 429, unreadable body. The
+  caller wraps it again.
+
+Thinking is switched **off** (`thinkingConfig.thinkingBudget: 0`). 2.5 Flash bills thoughts against
+the output budget, and with it on the model spent the whole allowance thinking and returned no
+content at all. Measured 2.5–3 s cold, 0.07 s warm.
+
+`reason` (provenance — "Often bought together") and `rationale` (the model's take on this deal) are
+deliberately separate fields: overloading one would make the panel change meaning depending on
+whether an env var is set. Both are mirrored by hand in `schemas/quotation.py` and
+`frontend/src/types/api.ts`.
+
+The cache key is a fingerprint of the quote's lines plus tier, currency, margin floor and the active
+model, so editing a line changes the key rather than needing an invalidation call at every edit
+site. **Dismissals stay outside the key** and are filtered after the read — the loader over-fetches
+so the panel still shows five.
+
+Free-tier Gemini is roughly 10 requests a minute. Past that the ranker 429s and the panel silently
+keeps its deterministic order, which is why the 60-second cache is also the rate limiter.
+
+## Deal health has to have been asked to look
+
+Alerts exist only once `health_service.sweep()` writes them. Three things call it: Celery Beat
+hourly, `POST /alerts/sweep`, and **a detached task in the `main.py` lifespan** — because Beat is a
+separate `make beat` process that is easy not to be running, and without the startup sweep a
+perfectly healthy install shows an empty screen with no way to tell that from "nothing is wrong".
+That task swallows every exception: a failing sweep must not abort boot.
+
+`sweep()` commits unconditionally. It used to commit only `if raised`, which rolled back the
+"superseded" resolutions `_suppressed` writes on its way to returning `False`.
+
+The screen distinguishes three states that used to render identically — never swept, swept and
+clean, and the request failed. `GET /alerts/counts` carries `last_swept_at` (a plain Redis value,
+outside the versioned key space so a namespace bump cannot lose it) to tell the first two apart.
+
 `report_service.dashboard(db, viewer)` is scoped by the same predicate the lists use, and its
 cache key carries the viewer (`home:{role}:{id}`) - a shared key would serve one person's
 scoped numbers to everyone. Tiles differ per role, and each is computed from the same query as
