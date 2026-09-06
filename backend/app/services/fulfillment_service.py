@@ -159,8 +159,7 @@ async def plan_split(
                     quantity=remaining,
                     status=AllocationStatus.BACKORDERED,
                     estimated_shipping_cost=0,
-                    expected_restock_date=today
-                    + timedelta(days=int(fallback.default_lead_time_days)),
+                    expected_restock_date=_restock_date(fallback),
                 )
             )
 
@@ -196,6 +195,18 @@ async def plan_split(
         db.add(allocation)
     await db.flush()
     return fulfillment
+
+
+def _restock_date(warehouse) -> date:
+    """When a backorder booked here is expected to clear.
+
+    One definition, because there were two: `plan_split` used the warehouse's
+    own lead time while `accept_split` hardcoded seven days, so the same
+    allocation could promise a different date depending on which path
+    backordered it.
+    """
+    lead = int(getattr(warehouse, "default_lead_time_days", 0) or 0) if warehouse else 0
+    return date.today() + timedelta(days=lead)
 
 
 async def _default_warehouse(db: AsyncSession) -> Warehouse:
@@ -245,7 +256,11 @@ async def accept_split(
             # Someone else took it between planning and accepting. Backorder
             # rather than fail: the order is still good, the stock is not.
             allocation.status = AllocationStatus.BACKORDERED
-            allocation.expected_restock_date = date.today() + timedelta(days=7)
+            # The allocation carries only the id, and there is no relationship
+            # to lazy-load under asyncpg.
+            allocation.expected_restock_date = _restock_date(
+                await db.get(Warehouse, allocation.warehouse_id)
+            )
             db.add(allocation)
             continue
 
