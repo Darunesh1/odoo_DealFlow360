@@ -475,14 +475,47 @@ colleagues' discount anomalies.
 
 ## Dashboards have to agree with the screens they link to
 
-## Suggestions, and the AI step that is never a dependency
+## The recommendation engine
 
-`upsell_service` sources candidates in four tiers, strongest evidence first:
-`product_pairings`, then `products.is_promoted`, then **category affinity** (a module constant,
-`CATEGORY_AFFINITY`), then plain margin. The last two exist because the first two are configuration
-somebody has to enter and usually hasn't — 306 products carrying 6 pairings and 1 promotion left the
-panel empty on nearly every quote. Pricing happens **in the pool query**, not per candidate; it used
-to be one `resolve_variant_price` round trip each, which does not survive a pool of sixty.
+Two different questions, answered separately.
+
+**Upsell — "which one?"** For each line, the other active variants of the same product that cost
+more, priced for this tier and past the margin floor, smallest uplift first and capped at two.
+Deliberately **not** scored against cross-sells and **not** sent to the ranker: a dearer version of
+a line the rep already chose is relevant by construction. Accepting one swaps the line in place —
+`QuotationLineUpdate.variant_id` → `quotation_service._swap_variant`, which moves everything the
+line snapshotted (sku, name, cost, options, tier price, source warehouse) and re-runs the capacity
+check. The product may not change: that is a different line, not an upgrade.
+
+**Cross-sell — "what else?"** An additive score out of 100, weights at the top of
+`upsell_service.py`:
+
+| Component | Weight | Source |
+|---|---|---|
+| co-purchase | 40 | mined `product_pairings`, `source=CO_PURCHASE` |
+| admin pairing | 20 | typed `product_pairings`, `source=MANUAL` |
+| category affinity | 15 | `CATEGORY_AFFINITY`, weighted per target |
+| customer fit | 10 | what this customer's `sales_records` show |
+| margin | 10 | **percentile within the pool**, never a currency amount |
+| promotion | 5 | `products.is_promoted` |
+| near-duplicate | −30 | shares a significant name token with a line |
+
+Two rules the weights encode, both learned from the bug they replaced. **Margin can never drive the
+result** — the old sort was `tier_weight × margin_delta`, and with margins spanning $25–$710 that
+made `0.3 × $709` beat `0.6 × $50`, so the panel showed the catalogue's most profitable products on
+every quote. And **affinity has to discriminate** — it used to return the *union* of each line's
+complementary categories, which on a three-line quote covered all six categories that exist.
+`_category_demand` now combines lines with a noisy-OR, discounts a category already on the quote,
+and cuts and caps at three.
+
+Pricing happens **in the pool query**, not per candidate; it used to be one `resolve_variant_price`
+round trip each, which does not survive a pool of sixty. A diversity pass caps the head at two per
+category so one strong signal cannot fill the panel.
+
+**`pairing_service.mine_co_purchases`** is what makes it learn: a self-join over `sales_records`
+(two products on the same confirmed order were bought together once), rebuilt daily on Beat.
+It **never touches a `MANUAL` row** — an admin's judgement is not a nightly job's to delete, which
+is also why `seed.py` and the generator seed pairings as `MANUAL`.
 
 With `GEMINI_API_KEY` set, `ai_ranking_service.rerank` re-orders those candidates and writes a
 one-line `rationale` per card. Three properties make that safe on the critical path, and all three
@@ -511,8 +544,10 @@ model, so editing a line changes the key rather than needing an invalidation cal
 site. **Dismissals stay outside the key** and are filtered after the read — the loader over-fetches
 so the panel still shows five.
 
-Free-tier Gemini is roughly 10 requests a minute. Past that the ranker 429s and the panel silently
-keeps its deterministic order, which is why the 60-second cache is also the rate limiter.
+`GEMINI_MODEL` defaults to **flash-lite**, not flash: the free tier allows twenty
+`gemini-2.5-flash` calls a **day**, which one afternoon of testing exhausts, after which the panel
+silently drops to its deterministic order. Read the `429` body's `QuotaFailure` detail before
+assuming a per-minute limit. The 60-second cache is also the rate limiter.
 
 ## Deal health has to have been asked to look
 
